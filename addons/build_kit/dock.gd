@@ -236,9 +236,9 @@ func _make_row(row: Dictionary) -> Control:
 			bar.add_theme_constant_override("separation", Pal.SEP)
 			_fill_links(bar, links)
 			box.add_child(bar)
-		if str(row["id"]) == "asc_key":
+		if str(row["id"]) == "ios.asc_key":
 			box.add_child(_make_asc_key_form())
-		if str(row["id"]) == "preset":
+		if str(row["id"]) == "ios.preset":
 			if str(row["status"]) == "fail":
 				box.add_child(_make_preset_form())
 			elif bool(row.get("fixable", false)) and _teams.size() > 1:
@@ -361,7 +361,7 @@ func _show_result(result: Dictionary) -> void:
 
 
 func _on_fix(id: String) -> void:
-	var result: Dictionary = service.apply_fix(id, {"team_id": _selected_team} if id == "preset" else {})
+	var result: Dictionary = service.apply_fix(id, {"team_id": _selected_team} if id == "ios.preset" else {})
 	_status.text = str(result.get("message", result.get("error", "")))
 	_status.add_theme_color_override("font_color",
 		Pal.TEXT if result.get("ok", false) else Pal.ERROR)

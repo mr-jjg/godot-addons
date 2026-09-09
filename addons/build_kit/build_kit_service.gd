@@ -41,6 +41,7 @@ var preflight_rows: Array = []
 
 var _stages: Array = []          # queued {name, shell} dicts
 var _stage := ""                 # current stage name ("" = idle)
+var _active_platform := ""       # platform owning the current build ("" = idle)
 var _proc := {}                  # active Exec.spawn handle (+offset)
 var _upload := false
 var _context := {}               # bundle_id / team_id for classify + guidance
@@ -390,6 +391,7 @@ func start_build(upload := true) -> Dictionary:
 	_context = {"bundle_id": _preset["bundle_id"], "team_id": _preset["team_id"],
 		"key_id": str(asc_credentials()["key_id"])}
 	_upload = upload
+	_active_platform = "ios"
 
 	# Auth choice: a logged-in Xcode session cloud-signs with full permission,
 	# so prefer it; API-key flags only when there is no session (headless/CI).
@@ -534,6 +536,7 @@ func _poll_pipeline() -> void:
 
 func _finish(result: Dictionary) -> void:
 	_stage = ""
+	_active_platform = ""
 	_proc = {}
 	build_finished.emit(result)
 	if result.get("ok", false):
@@ -649,10 +652,10 @@ static func _row(id: String, label: String, status: String, detail := "", guidan
 func _check_xcode() -> Dictionary:
 	var r: Dictionary = Exec.run(PackedStringArray(["xcodebuild", "-version"]))
 	if int(r["code"]) != 0:
-		return _row("xcode", "Xcode", "fail", "",
+		return _row("ios.xcode", "Xcode", "fail", "",
 			"Install Xcode from the App Store, then: sudo xcode-select -s /Applications/Xcode.app",
 			false, [{"label": "Xcode on the App Store", "url": "https://apps.apple.com/app/xcode/id497799835"}])
-	return _row("xcode", "Xcode", "ok", str(r["output"]).split("\n")[0].strip_edges())
+	return _row("ios.xcode", "Xcode", "ok", str(r["output"]).split("\n")[0].strip_edges())
 
 
 ## Godot's version strings omit a zero patch: 4.6.0 → "4.6", 4.7.1 → "4.7.1".
@@ -718,7 +721,7 @@ func _fix_etc2() -> Dictionary:
 func _check_preset() -> Dictionary:
 	var preset := load_ios_preset()
 	if preset.is_empty():
-		return _row("preset", "iOS export preset", "fail", "",
+		return _row("ios.preset", "iOS export preset", "fail", "",
 			"1. Enter the bundle id below (reverse-DNS, e.g. com.studio.game)\n2. Pick your team\n3. Press Create preset.")
 	var problems := PackedStringArray()
 	if not preset["export_project_only"]:
@@ -730,8 +733,8 @@ func _check_preset() -> Dictionary:
 		problems.append("%d missing base keys" % missing.size())
 	var detail := "%s → %s" % [preset["name"], preset["bundle_id"]]
 	if problems.is_empty():
-		return _row("preset", "iOS export preset", "ok", detail)
-	return _row("preset", "iOS export preset", "warn",
+		return _row("ios.preset", "iOS export preset", "ok", detail)
+	return _row("ios.preset", "iOS export preset", "warn",
 		detail + " (" + ", ".join(problems) + ")",
 		"1. Pick your team below\n2. Press Fix.", true)
 
@@ -778,18 +781,18 @@ func _check_account() -> Dictionary:
 	var teams := parse_teams(str(r["output"]))
 	if int(r["code"]) != 0 or teams.is_empty():
 		var status := "warn" if has_asc_key() else "fail"
-		return _row("account", "Xcode account", status, "no signed-in teams",
+		return _row("ios.account", "Xcode account", status, "no signed-in teams",
 			"Sign into Xcode (Xcode → Settings → Accounts → ＋). Not needed once an ASC API key is configured — cloud signing then works headless.",
 			false, [{"label": "Apple Developer account", "url": "https://developer.apple.com/account"}])
-	return _row("account", "Xcode account", "ok", "teams: " + ", ".join(teams))
+	return _row("ios.account", "Xcode account", "ok", "teams: " + ", ".join(teams))
 
 
 func _check_dist_cert() -> Dictionary:
 	var r: Dictionary = Exec.run(PackedStringArray(["security", "find-identity", "-v", "-p", "codesigning"]))
 	var out := str(r["output"])
 	if out.contains("Apple Distribution") or out.contains("iOS Distribution"):
-		return _row("dist_cert", "Distribution certificate", "ok", "in keychain")
-	return _row("dist_cert", "Distribution certificate", "warn", "not in keychain",
+		return _row("ios.dist_cert", "Distribution certificate", "ok", "in keychain")
+	return _row("ios.dist_cert", "Distribution certificate", "warn", "not in keychain",
 		"1. Xcode → Settings → Accounts → select your team\n2. Manage Certificates… → ＋ (bottom-left) → Apple Distribution\n3. Refresh here.",
 		false, [{"label": "Open Xcode", "url": "/Applications/Xcode.app"}])
 
@@ -798,21 +801,21 @@ func _check_asc_key() -> Dictionary:
 	var c := asc_credentials()
 	var links := [{"label": "Create API key", "url": "https://appstoreconnect.apple.com/access/integrations/api"}]
 	if c["key_id"] == "" and c["key_path"] == "":
-		return _row("asc_key", "App Store Connect API key", "warn", "not configured",
+		return _row("ios.asc_key", "App Store Connect API key", "warn", "not configured",
 			"1. ↗ Create API key → ＋ → any name, role: App Manager → Generate\n2. Download the .p8, then drop it on this panel (or Browse…)\n3. Copy the Issuer ID from the top of that page into the field below and Save",
 			false, links)
 	if c["key_path"] == "" or not FileAccess.file_exists(c["key_path"]):
-		return _row("asc_key", "App Store Connect API key", "fail", c["key_path"],
+		return _row("ios.asc_key", "App Store Connect API key", "fail", c["key_path"],
 			"The key file is missing — re-drop the downloaded AuthKey_%s.p8 onto this panel (or Browse…)." % c["key_id"],
 			false, links)
 	if c["issuer_id"] == "":
-		return _row("asc_key", "App Store Connect API key", "warn",
+		return _row("ios.asc_key", "App Store Connect API key", "warn",
 			"key %s — missing Issuer ID" % c["key_id"],
 			"Nearly there: copy the Issuer ID (top of the API-keys page, it has a Copy button) into the field below and Save.",
 			false, links)
 	var py: Dictionary = Exec.run(PackedStringArray(["command", "-v", "python3"]))
 	if int(py["code"]) != 0:
-		return _row("asc_key", "App Store Connect API key", "warn", "python3 missing",
+		return _row("ios.asc_key", "App Store Connect API key", "warn", "python3 missing",
 			"The ASC probes need python3 (ships with the Xcode command-line tools): xcode-select --install")
 	# Fully configured — validate that the key actually belongs to the preset's
 	# team before trusting any probe made with it (a wrong-team key answers
@@ -821,19 +824,19 @@ func _check_asc_key() -> Dictionary:
 		_asc_phase = "team"
 		_asc_proc = _spawn_asc("team-info", "-", "asc_team_info.log")
 		_asc_started_ms = Time.get_ticks_msec()
-	return _row("asc_key", "App Store Connect API key", "busy", "validating key %s…" % c["key_id"])
+	return _row("ios.asc_key", "App Store Connect API key", "busy", "validating key %s…" % c["key_id"])
 
 
 func _check_app_record() -> Dictionary:
 	var preset := load_ios_preset()
 	if preset.is_empty():
-		return _row("app_record", "App Store Connect app record", "warn", "needs a preset first")
+		return _row("ios.app_record", "App Store Connect app record", "warn", "needs a preset first")
 	if not has_asc_key():
-		return _row("app_record", "App Store Connect app record", "warn",
+		return _row("ios.app_record", "App Store Connect app record", "warn",
 			"unknown (no API key)",
 			"Without an API key this is only verified at upload time — the upload error will carry the create-app steps if the record is missing.",
 			false, [{"label": "Open My Apps", "url": "https://appstoreconnect.apple.com/apps"}])
-	return _row("app_record", "App Store Connect app record", "busy", "waiting for key validation…")
+	return _row("ios.app_record", "App Store Connect app record", "busy", "waiting for key validation…")
 
 
 ## "Name (ID)" when the team is signed into Xcode, else the bare id.
@@ -851,11 +854,11 @@ func _check_devices() -> Dictionary:
 		if line.contains("available"):
 			available += 1
 	if int(r["code"]) != 0:
-		return _row("devices", "Paired device", "warn", "devicectl unavailable")
+		return _row("ios.devices", "Paired device", "warn", "devicectl unavailable")
 	if available == 0:
-		return _row("devices", "Paired device", "warn", "none",
+		return _row("ios.devices", "Paired device", "warn", "none",
 			"Only needed for direct on-device installs — TestFlight builds don't require one. Pair via Xcode → Window → Devices and Simulators.")
-	return _row("devices", "Paired device", "ok", "%d available" % available)
+	return _row("ios.devices", "Paired device", "ok", "%d available" % available)
 
 
 func _spawn_asc(command: String, bundle_id: String, log_name: String) -> Dictionary:
@@ -888,7 +891,7 @@ func _poll_asc() -> void:
 		if Time.get_ticks_msec() - _asc_started_ms > 60000:
 			Exec.kill_tree(int(_asc_proc["pid"]))
 			_asc_proc = {}
-			var row_id := "asc_key" if _asc_phase == "team" else "app_record"
+			var row_id := "ios.asc_key" if _asc_phase == "team" else "ios.app_record"
 			_set_row(row_id, "warn", "check timed out", "Network problem reaching the App Store Connect API — Refresh to retry.")
 		return
 	var result := _parse_helper_json(Exec.read_all(_asc_proc["log"]))
@@ -899,20 +902,20 @@ func _poll_asc() -> void:
 		_handle_team_info(result, preset)
 		return
 	if not result.get("ok", false):
-		_set_row("app_record", "warn", "check failed", "ASC API error: %s" % result.get("error", "unknown"))
+		_set_row("ios.app_record", "warn", "check failed", "ASC API error: %s" % result.get("error", "unknown"))
 	elif result.get("found", false):
 		var apps: Array = result.get("apps", [])
 		var name := str(apps[0].get("name", "")) if not apps.is_empty() else ""
-		_set_row("app_record", "ok", name)
+		_set_row("ios.app_record", "ok", name)
 	elif not result.get("bundle_registered", true):
 		# Nothing has registered the App ID yet (signing does it, but only once
 		# a first build has run) — the New App dialog's dropdown would be empty.
-		_set_row("app_record", "fail", "bundle id not registered",
+		_set_row("ios.app_record", "fail", "bundle id not registered",
 			"1. Press Fix — registers %s on the team through the API key\n2. Then: My Apps → ＋ → New App → pick it from the Bundle ID dropdown." % bundle,
 			[{"label": "Register manually", "url": "https://developer.apple.com/account/resources/identifiers/add/bundleId"}],
 			true)
 	else:
-		_set_row("app_record", "fail", "missing for " + bundle,
+		_set_row("ios.app_record", "fail", "missing for " + bundle,
 			"One-time manual step (app creation is not in Apple's public API, ~2 min):\n1. My Apps → ＋ → New App\n2. Platform iOS; Name: unique across the App Store\n3. Bundle ID: pick %s from the dropdown\n4. SKU: any internal id. Then Refresh." % bundle,
 			[{"label": "Open My Apps", "url": "https://appstoreconnect.apple.com/apps"}])
 
@@ -927,32 +930,32 @@ func _handle_team_info(result: Dictionary, preset: Dictionary) -> void:
 	if not result.get("ok", false):
 		var error := str(result.get("error", "unknown"))
 		if error.contains("401") or error.contains("NOT_AUTHORIZED"):
-			_set_row("asc_key", "fail", "key %s rejected" % c["key_id"],
+			_set_row("ios.asc_key", "fail", "key %s rejected" % c["key_id"],
 				"1. ↗ Create API key — the stored key is invalid or revoked; make a new one (role: App Manager)\n2. Drop the new .p8 on this panel\n3. Paste its Issuer ID and Save.", key_links)
 		else:
-			_set_row("asc_key", "warn", "validation failed", "ASC API error: %s" % error)
-		_set_row("app_record", "warn", "skipped (key not validated)")
+			_set_row("ios.asc_key", "warn", "validation failed", "ASC API error: %s" % error)
+		_set_row("ios.app_record", "warn", "skipped (key not validated)")
 		return
 	var got := str(result.get("team_id", ""))
 	if expected != "" and got != "" and got != expected:
-		_set_row("asc_key", "fail",
+		_set_row("ios.asc_key", "fail",
 			"wrong team — key %s → %s" % [c["key_id"], _team_label(got)],
 			"This project targets %s, but the key belongs to %s.\n1. ↗ Create API key — first switch the team picker (top right of that page) to %s\n2. ＋ → any name, role: App Manager → Generate → Download\n3. Drop the new .p8 on this panel, paste that page's Issuer ID, Save." % [
 				_team_label(expected), _team_label(got), _team_label(expected)],
 			key_links)
-		_set_row("app_record", "warn", "blocked — wrong-team API key (fix the row above)")
+		_set_row("ios.app_record", "warn", "blocked — wrong-team API key (fix the row above)")
 		return
 	var detail := "key %s (team unverified — no assets on the team yet)" % c["key_id"]
 	if got != "":
 		detail = "key %s (team %s)" % [c["key_id"], _team_label(got)]
-	_set_row("asc_key", "ok", detail)
+	_set_row("ios.asc_key", "ok", detail)
 	if preset.is_empty():
-		_set_row("app_record", "warn", "needs a preset first")
+		_set_row("ios.app_record", "warn", "needs a preset first")
 		return
 	_asc_phase = "app"
 	_asc_proc = _spawn_asc("check-app", str(preset["bundle_id"]), "asc_check_app.log")
 	_asc_started_ms = Time.get_ticks_msec()
-	_set_row("app_record", "busy", "checking…")
+	_set_row("ios.app_record", "busy", "checking…")
 
 
 func _set_row(id: String, status: String, detail: String, guidance := "", links: Array = [], fixable := false) -> void:
@@ -1113,13 +1116,13 @@ func set_asc_issuer(issuer: String) -> Dictionary:
 ## team is available — with several, choosing is the user's call).
 func apply_fix(id: String, opts: Dictionary = {}) -> Dictionary:
 	match id:
-		"preset":
+		"ios.preset":
 			return _fix_preset(str(opts.get("team_id", "")))
 		"templates":
 			return _fix_templates()
 		"etc2":
 			return _fix_etc2()
-		"app_record":
+		"ios.app_record":
 			return _fix_bundle_id()
 	return err("No fix for '%s'." % id)
 
@@ -1140,7 +1143,7 @@ func _fix_bundle_id() -> Dictionary:
 		return err(str(handle.get("error", "spawn failed")))
 	handle["label"] = "bundle-id registration"
 	_fix_proc = handle
-	_set_row("app_record", "busy", "registering %s…" % preset["bundle_id"])
+	_set_row("ios.app_record", "busy", "registering %s…" % preset["bundle_id"])
 	log_line.emit("\n── bundle-id registration ──\n")
 	return ok({"message": "Registering the bundle id via the API key…"})
 
