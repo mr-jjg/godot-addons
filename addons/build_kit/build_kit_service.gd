@@ -287,40 +287,49 @@ func migrate_config_secrets_to_env() -> Dictionary:
 
 # ── Preset ────────────────────────────────────────────────────────────────────
 
-## Parse export_presets.cfg text for the iOS preset. Returns {} when absent,
-## else {section, name, export_path, bundle_id, team_id, export_project_only}.
-static func parse_ios_preset_text(text: String, preset_name := "") -> Dictionary:
+## Parse export_presets.cfg text for a preset targeting `platform`. Returns {}
+## when absent, else {section, name, export_path} plus whatever fields that
+## platform's checks actually need on top. iOS needs bundle_id/team_id/
+## export_project_only (its pipeline runs xcodebuild itself and needs to
+## know the signing team). Android's pipeline does the whole build in one
+## Godot step with no signing field to validate here — nothing extra needed.
+static func parse_preset_text(text: String, platform: String, preset_name := "") -> Dictionary:
 	var cfg := ConfigFile.new()
 	if cfg.parse(text) != OK:
 		return {}
 	for section in cfg.get_sections():
 		if section.contains(".options"):
 			continue
-		if str(cfg.get_value(section, "platform", "")) != "iOS":
+		if str(cfg.get_value(section, "platform", "")) != platform:
 			continue
 		var name := str(cfg.get_value(section, "name", ""))
 		if preset_name != "" and name != preset_name:
 			continue
-		var opt := section + ".options"
-		return {
+		var out := {
 			"section": section,
 			"name": name,
 			"export_path": str(cfg.get_value(section, "export_path", "")),
-			"bundle_id": str(cfg.get_value(opt, "application/bundle_identifier", "")),
-			"team_id": str(cfg.get_value(opt, "application/app_store_team_id", "")),
-			"export_project_only": bool(cfg.get_value(opt, "application/export_project_only", false)),
 		}
+		if platform == "iOS":
+			var opt := section + ".options"
+			out["bundle_id"] = str(cfg.get_value(opt, "application/bundle_identifier", ""))
+			out["team_id"] = str(cfg.get_value(opt, "application/app_store_team_id", ""))
+			out["export_project_only"] = bool(cfg.get_value(opt, "application/export_project_only", false))
+		return out
 	return {}
 
 
-func load_ios_preset() -> Dictionary:
+## config[platform.to_lower()] doesn't exist for "android" yet (config schema
+## work is still ahead of us), so .get()'s default just falls through to
+## `platform` itself until that piece lands — nothing here depends on it.
+func load_preset(platform: String) -> Dictionary:
 	if not FileAccess.file_exists("res://export_presets.cfg"):
 		return {}
 	var f := FileAccess.open("res://export_presets.cfg", FileAccess.READ)
-	var wanted := str(config.get("ios", {}).get("preset", "iOS"))
-	var preset := parse_ios_preset_text(f.get_as_text(), wanted)
+	var wanted := str(config.get(platform.to_lower(), {}).get("preset", platform))
+	var preset := parse_preset_text(f.get_as_text(), platform, wanted)
 	if preset.is_empty():
-		preset = parse_ios_preset_text(FileAccess.open("res://export_presets.cfg", FileAccess.READ).get_as_text())
+		preset = parse_preset_text(FileAccess.open("res://export_presets.cfg", FileAccess.READ).get_as_text(), platform)
 	return preset
 
 
@@ -377,7 +386,7 @@ func start_build(upload := true) -> Dictionary:
 	if is_busy():
 		return err("A build is already running (stage: %s)." % _stage)
 	load_config()
-	_preset = load_ios_preset()
+	_preset = load_preset("iOS")
 	if _preset.is_empty():
 		return err("No iOS export preset found. Create one in Project → Export (platform iOS), then Refresh preflight.")
 	if not _preset["export_project_only"]:
@@ -553,7 +562,7 @@ func check_testflight_status() -> Dictionary:
 		return err("Needs an App Store Connect API key (see the preflight ASC row).")
 	if not _builds_proc.is_empty():
 		return err("Already checking.")
-	var preset := load_ios_preset()
+	var preset := load_preset("iOS")
 	if preset.is_empty():
 		return err("No iOS preset.")
 	_builds_proc = _spawn_asc("builds", preset["bundle_id"], "asc_builds.log")
@@ -689,12 +698,12 @@ func _check_templates() -> Dictionary:
 	var ver := version_tag(v) + "." + str(v["status"])
 	if not FileAccess.file_exists(templates_dir().path_join("ios.zip")):
 		if templates_url(v) == "":
-			return _row("templates", "iOS export templates", "fail", ver,
+			return _row("ios.templates", "iOS export templates", "fail", ver,
 				"1. Editor → Manage Export Templates → Download and Install (no direct download for non-stable builds).")
-		return _row("templates", "iOS export templates", "fail", ver,
+		return _row("ios.templates", "iOS export templates", "fail", ver,
 			"1. Press Fix — downloads the official %s template pack (~1 GB, several minutes) and installs it." % ver,
 			true)
-	return _row("templates", "iOS export templates", "ok", ver)
+	return _row("ios.templates", "iOS export templates", "ok", ver)
 
 
 ## iOS export hard-requires ETC2/ASTC texture imports, and Godot reports the
@@ -719,7 +728,7 @@ func _fix_etc2() -> Dictionary:
 
 
 func _check_preset() -> Dictionary:
-	var preset := load_ios_preset()
+	var preset := load_preset("iOS")
 	if preset.is_empty():
 		return _row("ios.preset", "iOS export preset", "fail", "",
 			"1. Enter the bundle id below (reverse-DNS, e.g. com.studio.game)\n2. Pick your team\n3. Press Create preset.")
@@ -828,7 +837,7 @@ func _check_asc_key() -> Dictionary:
 
 
 func _check_app_record() -> Dictionary:
-	var preset := load_ios_preset()
+	var preset := load_preset("iOS")
 	if preset.is_empty():
 		return _row("ios.app_record", "App Store Connect app record", "warn", "needs a preset first")
 	if not has_asc_key():
@@ -859,6 +868,221 @@ func _check_devices() -> Dictionary:
 		return _row("ios.devices", "Paired device", "warn", "none",
 			"Only needed for direct on-device installs — TestFlight builds don't require one. Pair via Xcode → Window → Devices and Simulators.")
 	return _row("ios.devices", "Paired device", "ok", "%d available" % available)
+
+
+# ── Android preflight (new checks; not wired into refresh_preflight() yet) ────
+
+## The same .tpz download contains templates for every platform — just a
+## different file to check for here (android_debug.apk, not ios.zip). Only
+## that one matters this pass; android_release.apk/source.zip are for
+## AAB/Gradle Build, both deferred.
+func _check_android_templates() -> Dictionary:
+	var v: Dictionary = Engine.get_version_info()
+	var ver := version_tag(v) + "." + str(v["status"])
+	if not FileAccess.file_exists(templates_dir().path_join("android_debug.apk")):
+		if templates_url(v) == "":
+			return _row("android.templates", "Android export templates", "fail", ver,
+				"1. Editor → Manage Export Templates → Download and Install (no direct download for non-stable builds).")
+		return _row("android.templates", "Android export templates", "fail", ver,
+			"1. Press Fix — downloads the official %s template pack (~1 GB, several minutes) and installs it." % ver,
+			true)
+	return _row("android.templates", "Android export templates", "ok", ver)
+
+
+## sdk_path is Editor Settings' android_sdk_path, fetched fresh by the dock
+## each refresh (this service can't read EditorSettings itself). Fixable
+## only when the conventional install location has something to point at.
+func _check_android_sdk(sdk_path: String) -> Dictionary:
+	if sdk_path != "" and DirAccess.dir_exists_absolute(sdk_path):
+		return _row("android.sdk", "Android SDK", "ok", sdk_path)
+	var conventional := android_sdk_conventional_path()
+	if DirAccess.dir_exists_absolute(conventional):
+		return _row("android.sdk", "Android SDK", "warn",
+			_toolchain_path_detail(sdk_path) + " — found at " + conventional,
+			"1. Press Fix — points Editor Settings at the SDK found here\n2. Refresh preflight.",
+			true)
+	return _row("android.sdk", "Android SDK", "fail", _toolchain_path_detail(sdk_path),
+		"A valid Android SDK path is required in Editor Settings.\n1. Install Android Studio (it bundles the SDK) or the standalone command-line tools\n2. Editor → Editor Settings → Export → Android → Android SDK Path\n3. Refresh preflight.",
+		false, [{"label": "Android Studio", "url": "https://developer.android.com/studio"}])
+
+
+## jdk_path is Editor Settings' java_sdk_path, fetched fresh by the dock
+## (this service can't read EditorSettings itself). Falls back to
+## JAVA_HOME, then Android Studio's bundled runtime, before failing.
+func _check_android_jdk(jdk_path: String) -> Dictionary:
+	if jdk_path != "" and DirAccess.dir_exists_absolute(jdk_path):
+		return _row("android.jdk", "Java SDK", "ok", jdk_path)
+	var java_home := OS.get_environment("JAVA_HOME")
+	if java_home != "" and DirAccess.dir_exists_absolute(java_home):
+		return _row("android.jdk", "Java SDK",
+			"warn", _toolchain_path_detail(jdk_path) + " — found via JAVA_HOME: " + java_home,
+			"1. Press Fix — points Editor Settings at JAVA_HOME\n2. Refresh preflight.",
+			true)
+	var jbr := android_studio_jbr_path()
+	if DirAccess.dir_exists_absolute(jbr):
+		return _row("android.jdk", "Java SDK",
+			"warn", _toolchain_path_detail(jdk_path) + " — found Android Studio's bundled JDK: " + jbr,
+			"1. Press Fix — points Editor Settings at Android Studio's bundled JDK\n2. Refresh preflight.",
+			true)
+	return _row("android.jdk", "Java SDK", "fail", _toolchain_path_detail(jdk_path),
+		"A valid Java SDK path is required in Editor Settings.\n1. Install a JDK (Android Studio bundles one, or install one standalone)\n2. Editor → Editor Settings → Export → Android → Java SDK Path\n3. Refresh preflight.",
+		false, [{"label": "Android Studio", "url": "https://developer.android.com/studio"}])
+
+
+## Shared "not configured" vs "configured but wrong" detail text for
+## Android's toolchain-path checks.
+static func _toolchain_path_detail(configured_path: String) -> String:
+	return "not configured" if configured_path == "" else "configured path missing (%s)" % configured_path
+
+
+## Picks windows, linux, or macos by os_name — anything other than
+## "Windows"/"Linux" falls back to macos.
+static func pick_by_os(os_name: String, windows: String, linux: String, macos: String) -> String:
+	match os_name:
+		"Windows":
+			return windows
+		"Linux":
+			return linux
+		_:
+			return macos
+
+
+## Where the Android SDK conventionally lives after an Android Studio
+## install — the "is it here even though nobody told us" fallback the Fix
+## checks before writing anything.
+static func android_sdk_conventional_path() -> String:
+	return pick_by_os(OS.get_name(),
+		OS.get_environment("LOCALAPPDATA").path_join("Android/Sdk"),
+		OS.get_environment("HOME").path_join("Android/Sdk"),
+		OS.get_environment("HOME").path_join("Library/Android/sdk"))
+
+
+## Android Studio's own bundled JDK (JBR), checked only when JAVA_HOME
+## isn't set. Less reliable than a plain SDK path guess: Android Studio's
+## own install location varies more, especially per-user Windows/Linux installs.
+static func android_studio_jbr_path() -> String:
+	return pick_by_os(OS.get_name(),
+		"C:/Program Files/Android/Android Studio/jbr",
+		"/opt/android-studio/jbr",
+		"/Applications/Android Studio.app/Contents/jbr/Contents/Home")
+
+
+## adb isn't guaranteed on PATH (confirmed absent on a default macOS
+## install) — prefers the SDK's own platform-tools, falling back to a bare
+## command name.
+static func resolve_adb_path(sdk_path: String) -> String:
+	var exe_name := "adb.exe" if OS.get_name() == "Windows" else "adb"
+	if sdk_path != "":
+		var candidate := sdk_path.path_join("platform-tools").path_join(exe_name)
+		if FileAccess.file_exists(candidate):
+			return candidate
+	return exe_name
+
+
+## Parses `adb devices -l` into [{serial, state, model}, ...] for a future
+## device picker. `state` lets callers tell "unauthorized"/"offline" apart
+## from a ready ("device") one.
+static func parse_adb_devices(output: String) -> Array:
+	var devices: Array = []
+	for line in output.split("\n"):
+		var s := line.strip_edges()
+		if s.is_empty() or s.begins_with("List of devices"):
+			continue
+		var tokens := s.split(" ", false)
+		if tokens.size() < 2:
+			continue
+		var model := ""
+		for token in tokens:
+			if token.begins_with("model:"):
+				model = token.trim_prefix("model:")
+		devices.append({"serial": tokens[0], "state": tokens[1], "model": model})
+	return devices
+
+
+## Android's only build mode this pass IS a device install, so "no ready
+## device" is a hard fail here (iOS's device row is a warn — TestFlight/.ipa
+## export don't need a physical device).
+func _check_android_devices(sdk_path: String) -> Dictionary:
+	var adb := resolve_adb_path(sdk_path)
+	var r: Dictionary = Exec.run(PackedStringArray([adb, "devices", "-l"]))
+	if int(r["code"]) != 0:
+		return _row("android.devices", "Device", "warn", "adb unavailable",
+			"Needs a working Android SDK first — see the SDK row above.")
+	var devices := parse_adb_devices(str(r["output"]))
+	var ready: Array = devices.filter(func(d): return str(d["state"]) == "device")
+	if devices.is_empty():
+		return _row("android.devices", "Device", "fail", "none",
+			"1. Plug in an Android device with USB debugging enabled (Settings → Developer options), or start an emulator\n2. Refresh preflight.")
+	if ready.is_empty():
+		return _row("android.devices", "Device", "fail", "%d connected, none authorized" % devices.size(),
+			"A device is connected but hasn't accepted the debugging prompt yet.\n1. On the device, accept the \"Allow USB debugging\" RSA fingerprint prompt\n2. Refresh preflight.")
+	return _row("android.devices", "Device", "ok", "%d available" % ready.size())
+
+
+## Verified against engine source (not inferred): OS.get_data_dir()/godot/
+## keystores/debug.keystore, lowercase "godot".
+static func default_debug_keystore_path() -> String:
+	return OS.get_data_dir().path_join("godot/keystores/debug.keystore")
+
+
+## No Fix — Godot manages this file itself. Treats path/user/pass as one
+## all-or-nothing group, per Godot's error text (exact validation rule
+## unconfirmed). A preset-level override or GODOT_ANDROID_KEYSTORE_DEBUG_*
+## env vars could make the keystore Godot actually uses diverge from what
+## this row reports.
+func _check_android_debug_keystore(keystore_path: String, keystore_user: String, keystore_pass: String) -> Dictionary:
+	var configured := int(keystore_path != "") + int(keystore_user != "") + int(keystore_pass != "")
+	if configured != 0 and configured != 3:
+		return _row("android.debug_keystore", "Debug keystore", "fail", "inconsistent config",
+			"Either Debug Keystore, Debug User AND Debug Password settings must be configured OR none of them.")
+	if configured == 3:
+		if FileAccess.file_exists(keystore_path):
+			return _row("android.debug_keystore", "Debug keystore", "ok", keystore_path)
+		return _row("android.debug_keystore", "Debug keystore", "fail", _toolchain_path_detail(keystore_path),
+			"1. Fix the path under Editor → Editor Settings → Export → Android → Debug Keystore, or clear all three debug keystore fields to let Godot manage its own default\n2. Refresh preflight.")
+	var default_path := default_debug_keystore_path()
+	if FileAccess.file_exists(default_path):
+		return _row("android.debug_keystore", "Debug keystore", "ok", "Godot-managed default: " + default_path)
+	return _row("android.debug_keystore", "Debug keystore", "warn", "not yet generated",
+		"Godot creates this automatically on first export, using the JDK configured above. Nothing to do here yet — Refresh after your first export to confirm it was created.")
+
+
+## Confirms an Android export preset exists and has its required base
+## config keys — Android's pipeline needs nothing else validated here.
+func _check_android_preset() -> Dictionary:
+	var preset := load_preset("Android")
+	if preset.is_empty():
+		return _row("android.preset", "Android export preset", "fail", "",
+			"No Android export preset found. Create one in Project → Export (platform Android).")
+	var missing := _missing_base_keys(preset["section"])
+	if not missing.is_empty():
+		return _row("android.preset", "Android export preset", "warn",
+			"%s (%d missing base keys)" % [preset["name"], missing.size()],
+			"1. Press Fix — backfills the missing base keys\n2. Refresh preflight.", true)
+	return _row("android.preset", "Android export preset", "ok", "%s → %s" % [preset["name"], preset["export_path"]])
+
+
+## Backfills missing base preset keys only — Android has no signing-team
+## fields to fix the way iOS does. Only writes export_presets.cfg, no
+## Editor Settings involved.
+func _fix_android_preset() -> Dictionary:
+	var preset := load_preset("Android")
+	if preset.is_empty():
+		return err("No Android preset to fix — create one first.")
+	var cfg := ConfigFile.new()
+	if cfg.load("res://export_presets.cfg") != OK:
+		return err("Cannot parse export_presets.cfg.")
+	var defaults := preset_base_defaults()
+	var healed := 0
+	for key in defaults:
+		if not cfg.has_section_key(str(preset["section"]), key):
+			cfg.set_value(str(preset["section"]), key, defaults[key])
+			healed += 1
+	if cfg.save("res://export_presets.cfg") != OK:
+		return err("Cannot write export_presets.cfg.")
+	mark_dirty()
+	refresh_preflight()
+	return ok({"message": "backfilled %d base keys" % healed})
 
 
 func _spawn_asc(command: String, bundle_id: String, log_name: String) -> Dictionary:
@@ -896,7 +1120,7 @@ func _poll_asc() -> void:
 		return
 	var result := _parse_helper_json(Exec.read_all(_asc_proc["log"]))
 	_asc_proc = {}
-	var preset := load_ios_preset()
+	var preset := load_preset("iOS")
 	var bundle := str(preset.get("bundle_id", ""))
 	if _asc_phase == "team":
 		_handle_team_info(result, preset)
@@ -1003,7 +1227,7 @@ func create_ios_preset(bundle_id: String, team_id := "", path := "res://export_p
 	bundle_id = bundle_id.strip_edges()
 	if not valid_bundle_id(bundle_id):
 		return err("Bundle id must be reverse-DNS, e.g. com.studio.game.")
-	if path == "res://export_presets.cfg" and not load_ios_preset().is_empty():
+	if path == "res://export_presets.cfg" and not load_preset("iOS").is_empty():
 		return err("An iOS preset already exists.")
 	var cfg := ConfigFile.new()
 	if FileAccess.file_exists(path):
@@ -1118,12 +1342,14 @@ func apply_fix(id: String, opts: Dictionary = {}) -> Dictionary:
 	match id:
 		"ios.preset":
 			return _fix_preset(str(opts.get("team_id", "")))
-		"templates":
+		"ios.templates", "android.templates":
 			return _fix_templates()
 		"etc2":
 			return _fix_etc2()
 		"ios.app_record":
 			return _fix_bundle_id()
+		"android.preset":
+			return _fix_android_preset()
 	return err("No fix for '%s'." % id)
 
 
@@ -1135,7 +1361,7 @@ func _fix_bundle_id() -> Dictionary:
 		return err("A fix is already running.")
 	if not has_asc_key():
 		return err("Needs an ASC API key (see the row above).")
-	var preset := load_ios_preset()
+	var preset := load_preset("iOS")
 	if preset.is_empty():
 		return err("No iOS preset.")
 	var handle := _spawn_asc("ensure-bundle-id", preset["bundle_id"], "asc_bundle_id.log")
@@ -1229,7 +1455,7 @@ func _missing_base_keys(section: String) -> PackedStringArray:
 
 
 func _fix_preset(team_id := "") -> Dictionary:
-	var preset := load_ios_preset()
+	var preset := load_preset("iOS")
 	if preset.is_empty():
 		return err("No iOS preset to fix — create one with the form below first.")
 	var cfg := ConfigFile.new()

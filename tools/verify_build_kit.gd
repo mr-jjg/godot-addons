@@ -80,14 +80,24 @@ func _initialize() -> void:
 	_check("classify specific beats generic", order["id"] == "missing_app_record", str(order))
 
 	# preset parsing
-	var preset := ServiceT.parse_ios_preset_text(PRESET_FIXTURE)
+	var preset := ServiceT.parse_preset_text(PRESET_FIXTURE, "iOS")
 	_check("preset found", preset.get("name", "") == "iOS", str(preset))
 	_check("preset section", preset.get("section", "") == "preset.1")
 	_check("preset bundle", preset.get("bundle_id", "") == "com.example.game")
 	_check("preset team", preset.get("team_id", "") == "TEAM123456")
 	_check("preset project_only", preset.get("export_project_only", false) == true)
-	_check("preset by name miss", ServiceT.parse_ios_preset_text(PRESET_FIXTURE, "nope").is_empty())
-	_check("preset no ios", ServiceT.parse_ios_preset_text("[preset.0]\nname=\"Web\"\nplatform=\"Web\"\n").is_empty())
+	_check("preset by name miss", ServiceT.parse_preset_text(PRESET_FIXTURE, "iOS", "nope").is_empty())
+	_check("preset no ios", ServiceT.parse_preset_text("[preset.0]\nname=\"Web\"\nplatform=\"Web\"\n", "iOS").is_empty())
+
+	# android preset parsing — base fields only, no iOS-only fields leaking in
+	const ANDROID_PRESET_FIXTURE := "[preset.0]\nname=\"Android\"\nplatform=\"Android\"\nexport_path=\"../build/android/game.apk\"\n[preset.0.options]\npackage/unique_name=\"com.example.game\"\n"
+	var android_preset := ServiceT.parse_preset_text(ANDROID_PRESET_FIXTURE, "Android")
+	_check("preset android found", android_preset.get("name", "") == "Android", str(android_preset))
+	_check("preset android export_path", android_preset.get("export_path", "") == "../build/android/game.apk", str(android_preset))
+	_check("preset android has no ios-only fields",
+		not android_preset.has("bundle_id") and not android_preset.has("team_id") and not android_preset.has("export_project_only"),
+		str(android_preset))
+	_check("preset no android", ServiceT.parse_preset_text("[preset.0]\nname=\"Web\"\nplatform=\"Web\"\n", "Android").is_empty())
 
 	# derived paths
 	var paths := ServiceT.derive_paths("/proj/game/", "../build/ios/Game.ipa")
@@ -165,7 +175,7 @@ func _initialize() -> void:
 	var created: Dictionary = svc2.create_ios_preset("com.example.verify", "TEAMPICKED1", tmp_preset)
 	_check("create preset ok", created.get("ok", false), str(created))
 	var created_text := FileAccess.open(tmp_preset, FileAccess.READ).get_as_text() if FileAccess.file_exists(tmp_preset) else ""
-	var reparsed := ServiceT.parse_ios_preset_text(created_text)
+	var reparsed := ServiceT.parse_preset_text(created_text, "iOS")
 	_check("created preset parses", reparsed.get("bundle_id", "") == "com.example.verify", created_text.left(200))
 	_check("created preset project-only", reparsed.get("export_project_only", false) == true)
 	# Godot's loader reads every base key with no default — all must be present.
@@ -204,6 +214,22 @@ func _initialize() -> void:
 	_check("issuer rejects empty", not svc.set_asc_issuer("").get("ok", true))
 	svc.free()
 
+	# apply_fix dispatch — routing only, scoped to fixes whose early-return
+	# has no side effects. "ios.templates"/"android.templates"/"etc2" are
+	# deliberately NOT exercised here: their fixes have no early exit and
+	# always run for real (a network download, a project.godot write) —
+	# never safe to invoke from an automated test.
+	var svc4: Node = ServiceT.new()
+	_check("apply_fix unknown id falls through",
+		str(svc4.apply_fix("bogus.id").get("error", "")) == "No fix for 'bogus.id'.")
+	_check("apply_fix routes ios.preset",
+		str(svc4.apply_fix("ios.preset").get("error", "")) == "No iOS preset to fix — create one with the form below first.")
+	_check("apply_fix routes android.preset",
+		str(svc4.apply_fix("android.preset").get("error", "")) == "No Android preset to fix — create one first.")
+	_check("apply_fix routes ios.app_record",
+		str(svc4.apply_fix("ios.app_record").get("error", "")) == "Needs an ASC API key (see the row above).")
+	svc4.free()
+
 	# real spawn round-trip (log + exit sentinel)
 	var log_path := OS.get_cache_dir().path_join("build_kit_verify").path_join("spawn.log")
 	var handle := Exec.spawn_shell("echo hello; exit 7", log_path)
@@ -217,6 +243,37 @@ func _initialize() -> void:
 		_check("spawn log", Exec.read_all(log_path).contains("hello"))
 		var tail := Exec.read_from(log_path, 0)
 		_check("spawn tail", str(tail["text"]).contains("hello") and int(tail["offset"]) > 0)
+
+	# per-OS conventional-path picker (Android preflight groundwork)
+	_check("pick_by_os windows", ServiceT.pick_by_os("Windows", "W", "L", "M") == "W")
+	_check("pick_by_os linux", ServiceT.pick_by_os("Linux", "W", "L", "M") == "L")
+	_check("pick_by_os macos", ServiceT.pick_by_os("macOS", "W", "L", "M") == "M")
+	_check("pick_by_os unknown falls back to macos", ServiceT.pick_by_os("FreeBSD", "W", "L", "M") == "M")
+	_check("toolchain detail empty", ServiceT._toolchain_path_detail("") == "not configured")
+	_check("toolchain detail wrong path", ServiceT._toolchain_path_detail("/nope") == "configured path missing (/nope)")
+
+	# adb devices -l parsing
+	var adb_out := "List of devices attached\nemulator-5554          device product:sdk_gphone64_arm64 model:sdk_gphone64_arm64 device:emulator64_arm64 transport_id:1\nR58N70ABCDE             unauthorized usb:1-1 transport_id:2\n\n"
+	var adb_devices := ServiceT.parse_adb_devices(adb_out)
+	_check("adb devices count", adb_devices.size() == 2, str(adb_devices))
+	_check("adb devices serial", str(adb_devices[0]["serial"]) == "emulator-5554", str(adb_devices))
+	_check("adb devices state", str(adb_devices[0]["state"]) == "device", str(adb_devices))
+	_check("adb devices model", str(adb_devices[0]["model"]) == "sdk_gphone64_arm64", str(adb_devices))
+	_check("adb devices unauthorized state", str(adb_devices[1]["state"]) == "unauthorized", str(adb_devices))
+	_check("adb devices no model on unauthorized", str(adb_devices[1]["model"]) == "", str(adb_devices))
+	_check("adb devices empty output", ServiceT.parse_adb_devices("List of devices attached\n\n").is_empty())
+
+	# debug keystore all-or-nothing grouping — the one branch worth pinning
+	# down given how unverified the exact rule is (see the function's doc
+	# comment); the file-existence branches below it aren't tested, same as
+	# every other check that touches real DirAccess/FileAccess state.
+	var svc3: Node = ServiceT.new()
+	var partial: Dictionary = svc3._check_android_debug_keystore("/some/path", "", "")
+	_check("debug keystore flags partial config",
+		partial.get("status", "") == "fail" and partial.get("id", "") == "android.debug_keystore", str(partial))
+	var none_configured: Dictionary = svc3._check_android_debug_keystore("", "", "")
+	_check("debug keystore allows none configured", none_configured.get("status", "") != "fail", str(none_configured))
+	svc3.free()
 
 	print("VERIFY build_kit: %s" % ("PASS" if _fails == 0 else "FAIL (%d)" % _fails))
 	quit(0 if _fails == 0 else 1)
