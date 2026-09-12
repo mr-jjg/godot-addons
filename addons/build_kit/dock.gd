@@ -18,6 +18,7 @@ var _rows_box := {}      # platform -> VBoxContainer
 var _status := {}        # platform -> Label
 var _status_links := {}  # platform -> HBoxContainer
 var _log := {}           # platform -> TextEdit
+var _status_timers := {} # platform -> Timer (one-off action feedback auto-clear)
 
 var _btn_testflight: Button
 var _btn_ipa: Button
@@ -178,12 +179,37 @@ func _ready_devices() -> Array:
 	return _devices.filter(func(d): return str(d["state"]) == "device")
 
 
-func _set_status(platform: String, text: String, color: Color) -> void:
+## How long a one-off action's feedback (a Fix result, a dropped-file result, an
+## immediate start-build error) stays visible before clearing itself. Live
+## pipeline state (stage progress, build results) passes duration 0 (the
+## default) to stay up — it's already kept current by the next signal, not
+## stale the way a rejected button click's message otherwise sits forever.
+const STATUS_TOAST_SECONDS := 6.0
+
+
+func _set_status(platform: String, text: String, color: Color, duration := 0.0) -> void:
 	var label: Label = _status.get(platform)
 	if label == null:
 		return
 	label.text = text
 	label.add_theme_color_override("font_color", color)
+	var timer: Timer = _status_timers.get(platform)
+	if timer != null:
+		timer.stop()
+	if duration > 0.0 and text != "":
+		if timer == null:
+			timer = Timer.new()
+			timer.one_shot = true
+			timer.timeout.connect(_on_status_timeout.bind(platform))
+			add_child(timer)
+			_status_timers[platform] = timer
+		timer.start(duration)
+
+
+func _on_status_timeout(platform: String) -> void:
+	var label: Label = _status.get(platform)
+	if label != null:
+		label.text = ""
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -203,7 +229,7 @@ func _on_build_ipa() -> void:
 func _start(upload: bool) -> void:
 	var result: Dictionary = service.start_build(upload)
 	if not result.get("ok", false):
-		_set_status("ios", str(result.get("error", "")), Pal.ERROR)
+		_set_status("ios", str(result.get("error", "")), Pal.ERROR, STATUS_TOAST_SECONDS)
 
 
 func _on_cancel() -> void:
@@ -213,7 +239,7 @@ func _on_cancel() -> void:
 func _on_tf_status() -> void:
 	var result: Dictionary = service.check_testflight_status()
 	if not result.get("ok", false):
-		_set_status("ios", str(result.get("error", "")), Pal.ERROR)
+		_set_status("ios", str(result.get("error", "")), Pal.ERROR, STATUS_TOAST_SECONDS)
 		return
 	# Retire the previous answer the moment a new probe starts — otherwise the
 	# old verdict sits there looking current for the whole round trip.
@@ -485,7 +511,7 @@ func _on_files_dropped(files: PackedStringArray) -> void:
 
 func _show_result(result: Dictionary) -> void:
 	_set_status("ios", str(result.get("message", result.get("error", ""))),
-		Pal.TEXT if result.get("ok", false) else Pal.ERROR)
+		Pal.TEXT if result.get("ok", false) else Pal.ERROR, STATUS_TOAST_SECONDS)
 
 
 ## android.sdk/android.jdk write an Editor Setting — apply_fix() can't reach
@@ -499,9 +525,9 @@ const ANDROID_EDITOR_SETTING_FIXES := {
 func _on_fix(id: String, platform: String, fix_value: String) -> void:
 	if ANDROID_EDITOR_SETTING_FIXES.has(id):
 		EditorInterface.get_editor_settings().set_setting(ANDROID_EDITOR_SETTING_FIXES[id], fix_value)
-		_set_status(platform, "Editor Settings updated: %s" % fix_value, Pal.TEXT)
+		_set_status(platform, "Editor Settings updated: %s" % fix_value, Pal.TEXT, STATUS_TOAST_SECONDS)
 		service.refresh_preflight()
 		return
 	var result: Dictionary = service.apply_fix(id, {"team_id": _selected_team} if id == "ios.preset" else {})
 	_set_status(platform, str(result.get("message", result.get("error", ""))),
-		Pal.TEXT if result.get("ok", false) else Pal.ERROR)
+		Pal.TEXT if result.get("ok", false) else Pal.ERROR, STATUS_TOAST_SECONDS)
