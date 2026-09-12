@@ -1395,7 +1395,8 @@ func _fix_bundle_id() -> Dictionary:
 ## install it where the editor expects it — the same result as Manage Export
 ## Templates → Download and Install, without the dialog. `row_id` is whichever
 ## of ios.templates/android.templates triggered the Fix, so the busy indicator
-## and log lines tag the right platform.
+## and log lines tag the right platform. Uses HTTPRequest + ZIPReader — no
+## shell, so no OS branch needed.
 func _fix_templates(row_id: String) -> Dictionary:
 	if not _fix_proc.is_empty():
 		return err("A fix is already running.")
@@ -1406,28 +1407,62 @@ func _fix_templates(row_id: String) -> Dictionary:
 	var dest := templates_dir()
 	var cache := OS.get_cache_dir().path_join("build_kit")
 	var tpz := cache.path_join("templates.tpz")
-	var extract := cache.path_join("tpz_extract")
-	var shell := "curl -fL -sS -o %s %s && rm -rf %s && unzip -q %s -d %s && mkdir -p %s && ditto %s %s && rm -rf %s %s" % [
-		Exec.quote(tpz), Exec.quote(url),
-		Exec.quote(extract),
-		Exec.quote(tpz), Exec.quote(extract),
-		Exec.quote(dest),
-		Exec.quote(extract.path_join("templates")), Exec.quote(dest),
-		Exec.quote(extract), Exec.quote(tpz)]
-	var handle := Exec.spawn_shell(shell, cache.path_join("templates_install.log"))
-	if not handle.get("ok", false):
-		return err(str(handle.get("error", "spawn failed")))
+	DirAccess.make_dir_recursive_absolute(cache)
 	var platform := row_id.get_slice(".", 0)
-	handle["label"] = "templates install"
-	handle["platform"] = platform
-	_fix_proc = handle
+	var http := HTTPRequest.new()
+	http.download_file = tpz
+	add_child(http)
+	http.request_completed.connect(_on_templates_downloaded.bind(row_id, platform, dest, tpz, http))
+	var request_err := http.request(url)
+	if request_err != OK:
+		http.queue_free()
+		return err("Couldn't start the download (err %d)." % request_err)
+	_fix_proc = {"label": "templates install", "platform": platform}
 	_set_row(row_id, "busy", "downloading + installing (~1 GB, several minutes)…")
 	log_line.emit("\n── templates install ──\n%s\n→ %s\n" % [url, dest], platform)
 	return ok({"message": "Downloading export templates — the row updates when done."})
 
 
+## "" for anything not under the templates/ prefix (including the bare
+## directory-marker entry itself) — the filter half of the extraction, kept
+## pure so the verifier can exercise it without a real zip or network.
+static func _templates_zip_target(entry: String, dest: String) -> String:
+	if not entry.begins_with("templates/") or entry == "templates/":
+		return ""
+	return dest.path_join(entry.trim_prefix("templates/"))
+
+
+func _on_templates_downloaded(result: int, response_code: int, _headers: PackedStringArray,
+		_body: PackedByteArray, row_id: String, platform: String, dest: String, tpz: String, http: HTTPRequest) -> void:
+	http.queue_free()
+	_fix_proc = {}
+	if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+		log_line.emit("templates install FAILED (result %d, HTTP %d) — see above.\n" % [result, response_code], platform)
+		refresh_preflight()
+		return
+	var reader := ZIPReader.new()
+	if reader.open(tpz) != OK:
+		log_line.emit("templates install FAILED — could not open downloaded archive.\n", platform)
+		refresh_preflight()
+		return
+	for entry in reader.get_files():
+		var target := _templates_zip_target(entry, dest)
+		if target == "":
+			continue
+		DirAccess.make_dir_recursive_absolute(target.get_base_dir())
+		var f := FileAccess.open(target, FileAccess.WRITE)
+		if f == null:
+			continue
+		f.store_buffer(reader.read_file(entry))
+		f.close()
+	reader.close()
+	DirAccess.remove_absolute(tpz)
+	log_line.emit("templates install finished.\n", platform)
+	refresh_preflight()
+
+
 func _poll_fix() -> void:
-	if _fix_proc.is_empty():
+	if _fix_proc.is_empty() or not _fix_proc.has("exit_path"):
 		return
 	var platform := str(_fix_proc.get("platform", "ios"))
 	var tail: Dictionary = Exec.read_from(_fix_proc["log"], int(_fix_proc.get("offset", 0)))

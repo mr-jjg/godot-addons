@@ -168,6 +168,15 @@ func _initialize() -> void:
 	_check("templates url stable", ServiceT.templates_url({"major": 4, "minor": 7, "patch": 1, "status": "stable"}) == "https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_export_templates.tpz")
 	_check("templates url non-stable empty", ServiceT.templates_url({"major": 4, "minor": 8, "patch": 0, "status": "beta1"}) == "")
 
+	# templates zip extraction target — the filter/mapping half of
+	# _fix_templates()'s HTTPRequest+ZIPReader install (network + real zip I/O
+	# excluded here, same as ios.templates/android.templates below)
+	_check("zip target ios", ServiceT._templates_zip_target("templates/ios.zip", "/dest") == "/dest/ios.zip")
+	_check("zip target android", ServiceT._templates_zip_target("templates/android_debug.apk", "/dest") == "/dest/android_debug.apk")
+	_check("zip target directory marker", ServiceT._templates_zip_target("templates/", "/dest") == "")
+	_check("zip target outside prefix", ServiceT._templates_zip_target("templates_source/foo.txt", "/dest") == "")
+	_check("zip target unrelated file", ServiceT._templates_zip_target("README.md", "/dest") == "")
+
 	# bundle-id validation + preset creation round-trip
 	_check("bundle id ok", ServiceT.valid_bundle_id("com.studio.game-2"))
 	_check("bundle id needs dot", not ServiceT.valid_bundle_id("game"))
