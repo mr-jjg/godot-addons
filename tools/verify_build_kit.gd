@@ -53,8 +53,12 @@ func _initialize() -> void:
 	# exec.gd quoting
 	_check("quote plain", Exec.quote("abc") == "'abc'")
 	_check("quote space", Exec.quote("a b") == "'a b'")
-	_check("quote apostrophe", Exec.quote("a'b") == "'a'\\''b'")
-	_check("command_line", Exec.command_line(PackedStringArray(["x", "a b"])) == "'x' 'a b'")
+	if OS.get_name() == "Windows":
+		_check("quote apostrophe", Exec.quote("a'b") == "'a''b'")
+		_check("command_line", Exec.command_line(PackedStringArray(["x", "a b"])) == "& 'x' 'a b'")
+	else:
+		_check("quote apostrophe", Exec.quote("a'b") == "'a'\\''b'")
+		_check("command_line", Exec.command_line(PackedStringArray(["x", "a b"])) == "'x' 'a b'")
 
 	# classify.gd
 	var missing := Classify.classify("Step failed: IDEDistribution.DistributionAppRecordProviderError.missingApp(bundleId: \"com.x\")", {"bundle_id": "com.x"})
