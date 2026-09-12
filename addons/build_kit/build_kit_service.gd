@@ -32,9 +32,9 @@ const CONFIG_PATH := "res://build_kit.config.json"
 const ENV_PATHS := ["res://.env", "res://../.env"]
 
 signal preflight_changed(rows: Array)
-signal stage_changed(stage: String)
-signal log_line(text: String)
-signal build_finished(result: Dictionary)
+signal stage_changed(stage: String, platform: String)
+signal log_line(text: String, platform: String)
+signal build_finished(result: Dictionary, platform: String)
 
 var config := {}
 var preflight_rows: Array = []
@@ -422,7 +422,7 @@ func start_build(upload := true) -> Dictionary:
 
 	var auth := _auth_flags() if use_key else PackedStringArray()
 	log_line.emit("auth: %s\n" % ("ASC API key %s" % _context["key_id"] if use_key
-		else "Xcode session (teams: %s)" % ", ".join(teams)))
+		else "Xcode session (teams: %s)" % ", ".join(teams)), _active_platform)
 	var pb := "/usr/libexec/PlistBuddy"
 	var plist: String = paths["info_plist"]
 	_stages = [
@@ -512,8 +512,8 @@ func _next_stage(paths: Dictionary = {}) -> void:
 		_finish({"ok": false, "stage": _stage, "title": "Spawn failed", "guidance": str(handle["error"])})
 		return
 	_proc = handle
-	log_line.emit("\n── %s ──\n$ %s\n" % [_stage, stage["shell"]])
-	stage_changed.emit(_stage)
+	log_line.emit("\n── %s ──\n$ %s\n" % [_stage, stage["shell"]], _active_platform)
+	stage_changed.emit(_stage, _active_platform)
 
 
 func _poll_pipeline() -> void:
@@ -522,7 +522,7 @@ func _poll_pipeline() -> void:
 	var tail: Dictionary = Exec.read_from(_proc["log"], int(_proc["offset"]))
 	if str(tail["text"]) != "":
 		_proc["offset"] = tail["offset"]
-		log_line.emit(str(tail["text"]))
+		log_line.emit(str(tail["text"]), _active_platform)
 	var code := Exec.exit_code(_proc["exit_path"])
 	if code < 0:
 		if not Exec.is_running(int(_proc["pid"])) and str(tail["text"]) == "":
@@ -544,15 +544,16 @@ func _poll_pipeline() -> void:
 
 
 func _finish(result: Dictionary) -> void:
+	var platform := _active_platform
 	_stage = ""
 	_active_platform = ""
 	_proc = {}
-	build_finished.emit(result)
+	build_finished.emit(result, platform)
 	if result.get("ok", false):
-		log_line.emit("\n✓ %s\n%s\n" % [result.get("title", ""), result.get("guidance", "")])
+		log_line.emit("\n✓ %s\n%s\n" % [result.get("title", ""), result.get("guidance", "")], platform)
 	else:
-		log_line.emit("\n✗ %s\n%s\n" % [result.get("title", ""), result.get("guidance", "")])
-	stage_changed.emit("")
+		log_line.emit("\n✗ %s\n%s\n" % [result.get("title", ""), result.get("guidance", "")], platform)
+	stage_changed.emit("", platform)
 
 
 # ── TestFlight status (async ASC probe) ───────────────────────────────────────
@@ -570,7 +571,7 @@ func check_testflight_status() -> Dictionary:
 		var e := str(_builds_proc.get("error", "spawn failed"))
 		_builds_proc = {}
 		return err(e)
-	log_line.emit("\n── TestFlight status ──\n")
+	log_line.emit("\n── TestFlight status ──\n", "ios")
 	return ok()
 
 
@@ -589,25 +590,25 @@ func _poll_builds() -> void:
 	var apps_link := [{"label": "Open My Apps", "url": "https://appstoreconnect.apple.com/apps"}]
 	if not result.get("ok", false):
 		var asc_error := str(result.get("error", "unknown"))
-		log_line.emit("ASC error: %s\n" % asc_error)
+		log_line.emit("ASC error: %s\n" % asc_error, "ios")
 		build_finished.emit({"ok": false, "title": "TestFlight status check failed",
-			"guidance": asc_error, "links": apps_link})
+			"guidance": asc_error, "links": apps_link}, "ios")
 		return
 	if not result.get("found", false):
-		log_line.emit("No app record yet for this bundle id.\n")
+		log_line.emit("No app record yet for this bundle id.\n", "ios")
 		build_finished.emit({"ok": false, "title": "No app record for this bundle id",
 			"guidance": "Create the app in App Store Connect (or use the preflight app-record row), then check again.",
-			"links": apps_link})
+			"links": apps_link}, "ios")
 		return
 	var builds: Array = result.get("builds", [])
 	if builds.is_empty():
-		log_line.emit("App record exists; no builds uploaded yet.\n")
+		log_line.emit("App record exists; no builds uploaded yet.\n", "ios")
 		build_finished.emit({"ok": false, "title": "No builds uploaded yet",
 			"guidance": "The app record exists but App Store Connect lists no builds for it.",
-			"links": apps_link})
+			"links": apps_link}, "ios")
 		return
 	for b in builds:
-		log_line.emit("build %s  %s  (%s)\n" % [b.get("version"), b.get("state"), str(b.get("uploaded"))])
+		log_line.emit("build %s  %s  (%s)\n" % [b.get("version"), b.get("state"), str(b.get("uploaded"))], "ios")
 	# Surface the latest build's state as a status + next-step buttons, so
 	# "Ready to Test" arrives with the download/share walkthrough attached.
 	var latest: Dictionary = builds[0]
@@ -622,17 +623,17 @@ func _poll_builds() -> void:
 		build_finished.emit({"ok": true,
 			"title": "Build %s is Ready to Test" % latest.get("version"),
 			"guidance": "1. ↗ Open TestFlight tab → Internal Testing → ＋ → add a group with yourself as tester (first time only; later builds land in the group automatically)\n2. iPhone: install the TestFlight app, sign in with the same Apple ID → Moveborne appears → Install.",
-			"links": links})
+			"links": links}, "ios")
 	elif str(latest.get("state", "")) == "PROCESSING":
 		build_finished.emit({"ok": true,
 			"title": "Build %s still processing" % latest.get("version"),
 			"guidance": "Apple is scanning the build — usually a few minutes. Press 'TestFlight status' again shortly.",
-			"links": links})
+			"links": links}, "ios")
 	else:
 		build_finished.emit({"ok": false,
 			"title": "Build %s: %s" % [latest.get("version"), latest.get("state")],
 			"guidance": "Apple rejected the binary in post-processing — details were emailed to your developer account address.",
-			"links": links})
+			"links": links}, "ios")
 
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
@@ -649,6 +650,8 @@ func refresh_preflight() -> void:
 	rows.append(_check_asc_key())
 	rows.append(_check_app_record())
 	rows.append(_check_devices())
+	rows.append(_check_android_templates())
+	rows.append(_check_android_preset())
 	preflight_rows = rows
 	preflight_changed.emit(rows)
 
@@ -714,7 +717,7 @@ func _check_etc2() -> Dictionary:
 	if bool(ProjectSettings.get_setting("rendering/textures/vram_compression/import_etc2_astc", false)):
 		return _row("etc2", "ETC2/ASTC textures", "ok", "enabled")
 	return _row("etc2", "ETC2/ASTC textures", "fail", "disabled",
-		"iOS export requires it (and Godot hides this error in headless builds).\n1. Press Fix — enables rendering/textures/vram_compression/import_etc2_astc (textures reimport once)\n2. Build again.",
+		"Both iOS and Android export require it. Godot hides this error in headless iOS builds; Android's own export reports it directly.\n1. Press Fix — enables rendering/textures/vram_compression/import_etc2_astc (textures reimport once)\n2. Build again.",
 		true)
 
 
@@ -891,16 +894,19 @@ func _check_android_templates() -> Dictionary:
 
 ## sdk_path is Editor Settings' android_sdk_path, fetched fresh by the dock
 ## each refresh (this service can't read EditorSettings itself). Fixable
-## only when the conventional install location has something to point at.
+## only when the conventional install location has something to point at;
+## `fix_value` carries the resolved path for the dock to write directly.
 func _check_android_sdk(sdk_path: String) -> Dictionary:
 	if sdk_path != "" and DirAccess.dir_exists_absolute(sdk_path):
 		return _row("android.sdk", "Android SDK", "ok", sdk_path)
 	var conventional := android_sdk_conventional_path()
 	if DirAccess.dir_exists_absolute(conventional):
-		return _row("android.sdk", "Android SDK", "warn",
+		var row := _row("android.sdk", "Android SDK", "warn",
 			_toolchain_path_detail(sdk_path) + " — found at " + conventional,
 			"1. Press Fix — points Editor Settings at the SDK found here\n2. Refresh preflight.",
 			true)
+		row["fix_value"] = conventional
+		return row
 	return _row("android.sdk", "Android SDK", "fail", _toolchain_path_detail(sdk_path),
 		"A valid Android SDK path is required in Editor Settings.\n1. Install Android Studio (it bundles the SDK) or the standalone command-line tools\n2. Editor → Editor Settings → Export → Android → Android SDK Path\n3. Refresh preflight.",
 		false, [{"label": "Android Studio", "url": "https://developer.android.com/studio"}])
@@ -908,22 +914,27 @@ func _check_android_sdk(sdk_path: String) -> Dictionary:
 
 ## jdk_path is Editor Settings' java_sdk_path, fetched fresh by the dock
 ## (this service can't read EditorSettings itself). Falls back to
-## JAVA_HOME, then Android Studio's bundled runtime, before failing.
+## JAVA_HOME, then Android Studio's bundled runtime, before failing — a
+## fixable row's `fix_value` is whichever of those two the dock should write.
 func _check_android_jdk(jdk_path: String) -> Dictionary:
 	if jdk_path != "" and DirAccess.dir_exists_absolute(jdk_path):
 		return _row("android.jdk", "Java SDK", "ok", jdk_path)
 	var java_home := OS.get_environment("JAVA_HOME")
 	if java_home != "" and DirAccess.dir_exists_absolute(java_home):
-		return _row("android.jdk", "Java SDK",
+		var row := _row("android.jdk", "Java SDK",
 			"warn", _toolchain_path_detail(jdk_path) + " — found via JAVA_HOME: " + java_home,
 			"1. Press Fix — points Editor Settings at JAVA_HOME\n2. Refresh preflight.",
 			true)
+		row["fix_value"] = java_home
+		return row
 	var jbr := android_studio_jbr_path()
 	if DirAccess.dir_exists_absolute(jbr):
-		return _row("android.jdk", "Java SDK",
+		var row := _row("android.jdk", "Java SDK",
 			"warn", _toolchain_path_detail(jdk_path) + " — found Android Studio's bundled JDK: " + jbr,
 			"1. Press Fix — points Editor Settings at Android Studio's bundled JDK\n2. Refresh preflight.",
 			true)
+		row["fix_value"] = jbr
+		return row
 	return _row("android.jdk", "Java SDK", "fail", _toolchain_path_detail(jdk_path),
 		"A valid Java SDK path is required in Editor Settings.\n1. Install a JDK (Android Studio bundles one, or install one standalone)\n2. Editor → Editor Settings → Export → Android → Java SDK Path\n3. Refresh preflight.",
 		false, [{"label": "Android Studio", "url": "https://developer.android.com/studio"}])
@@ -997,6 +1008,12 @@ static func parse_adb_devices(output: String) -> Array:
 				model = token.trim_prefix("model:")
 		devices.append({"serial": tokens[0], "state": tokens[1], "model": model})
 	return devices
+
+
+## The dock's device-picker source (role of list_teams()).
+func list_adb_devices(sdk_path: String) -> Array:
+	var r: Dictionary = Exec.run(PackedStringArray([resolve_adb_path(sdk_path), "devices", "-l"]))
+	return parse_adb_devices(str(r["output"]))
 
 
 ## Android's only build mode this pass IS a device install, so "no ready
@@ -1343,7 +1360,7 @@ func apply_fix(id: String, opts: Dictionary = {}) -> Dictionary:
 		"ios.preset":
 			return _fix_preset(str(opts.get("team_id", "")))
 		"ios.templates", "android.templates":
-			return _fix_templates()
+			return _fix_templates(id)
 		"etc2":
 			return _fix_etc2()
 		"ios.app_record":
@@ -1370,14 +1387,16 @@ func _fix_bundle_id() -> Dictionary:
 	handle["label"] = "bundle-id registration"
 	_fix_proc = handle
 	_set_row("ios.app_record", "busy", "registering %s…" % preset["bundle_id"])
-	log_line.emit("\n── bundle-id registration ──\n")
+	log_line.emit("\n── bundle-id registration ──\n", "ios")
 	return ok({"message": "Registering the bundle id via the API key…"})
 
 
 ## Download the official export-template pack for the running Godot version and
 ## install it where the editor expects it — the same result as Manage Export
-## Templates → Download and Install, without the dialog.
-func _fix_templates() -> Dictionary:
+## Templates → Download and Install, without the dialog. `row_id` is whichever
+## of ios.templates/android.templates triggered the Fix, so the busy indicator
+## and log lines tag the right platform.
+func _fix_templates(row_id: String) -> Dictionary:
 	if not _fix_proc.is_empty():
 		return err("A fix is already running.")
 	var v: Dictionary = Engine.get_version_info()
@@ -1398,27 +1417,30 @@ func _fix_templates() -> Dictionary:
 	var handle := Exec.spawn_shell(shell, cache.path_join("templates_install.log"))
 	if not handle.get("ok", false):
 		return err(str(handle.get("error", "spawn failed")))
+	var platform := row_id.get_slice(".", 0)
 	handle["label"] = "templates install"
+	handle["platform"] = platform
 	_fix_proc = handle
-	_set_row("templates", "busy", "downloading + installing (~1 GB, several minutes)…")
-	log_line.emit("\n── templates install ──\n%s\n→ %s\n" % [url, dest])
+	_set_row(row_id, "busy", "downloading + installing (~1 GB, several minutes)…")
+	log_line.emit("\n── templates install ──\n%s\n→ %s\n" % [url, dest], platform)
 	return ok({"message": "Downloading export templates — the row updates when done."})
 
 
 func _poll_fix() -> void:
 	if _fix_proc.is_empty():
 		return
+	var platform := str(_fix_proc.get("platform", "ios"))
 	var tail: Dictionary = Exec.read_from(_fix_proc["log"], int(_fix_proc.get("offset", 0)))
 	if str(tail["text"]) != "":
 		_fix_proc["offset"] = tail["offset"]
-		log_line.emit(str(tail["text"]))
+		log_line.emit(str(tail["text"]), platform)
 	var code := Exec.exit_code(_fix_proc["exit_path"])
 	if code < 0:
 		return
 	var label := str(_fix_proc.get("label", "fix"))
 	_fix_proc = {}
 	log_line.emit("%s finished.\n" % label if code == 0
-		else "%s FAILED (exit %d) — see above.\n" % [label, code])
+		else "%s FAILED (exit %d) — see above.\n" % [label, code], platform)
 	refresh_preflight()
 
 

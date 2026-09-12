@@ -214,18 +214,25 @@ func _initialize() -> void:
 	_check("issuer rejects empty", not svc.set_asc_issuer("").get("ok", true))
 	svc.free()
 
-	# apply_fix dispatch — routing only, scoped to fixes whose early-return
-	# has no side effects. "ios.templates"/"android.templates"/"etc2" are
-	# deliberately NOT exercised here: their fixes have no early exit and
-	# always run for real (a network download, a project.godot write) —
-	# never safe to invoke from an automated test.
+	# apply_fix dispatch — routing only. ios.templates/android.templates/etc2
+	# are excluded: their fixes always run for real (network download,
+	# project.godot write), never safe from a test.
 	var svc4: Node = ServiceT.new()
 	_check("apply_fix unknown id falls through",
 		str(svc4.apply_fix("bogus.id").get("error", "")) == "No fix for 'bogus.id'.")
-	_check("apply_fix routes ios.preset",
-		str(svc4.apply_fix("ios.preset").get("error", "")) == "No iOS preset to fix — create one with the form below first.")
-	_check("apply_fix routes android.preset",
-		str(svc4.apply_fix("android.preset").get("error", "")) == "No Android preset to fix — create one first.")
+	# Only safe when the early-return (no preset yet) actually fires — a real
+	# preset makes apply_fix write export_presets.cfg for real, same reason
+	# ios.templates/android.templates/etc2 are excluded above.
+	if svc4.load_preset("iOS").is_empty():
+		_check("apply_fix routes ios.preset",
+			str(svc4.apply_fix("ios.preset").get("error", "")) == "No iOS preset to fix — create one with the form below first.")
+	else:
+		print("  skip apply_fix routes ios.preset (a real iOS preset exists in export_presets.cfg)")
+	if svc4.load_preset("Android").is_empty():
+		_check("apply_fix routes android.preset",
+			str(svc4.apply_fix("android.preset").get("error", "")) == "No Android preset to fix — create one first.")
+	else:
+		print("  skip apply_fix routes android.preset (a real Android preset exists in export_presets.cfg)")
 	_check("apply_fix routes ios.app_record",
 		str(svc4.apply_fix("ios.app_record").get("error", "")) == "Needs an ASC API key (see the row above).")
 	svc4.free()
@@ -274,6 +281,29 @@ func _initialize() -> void:
 	var none_configured: Dictionary = svc3._check_android_debug_keystore("", "", "")
 	_check("debug keystore allows none configured", none_configured.get("status", "") != "fail", str(none_configured))
 	svc3.free()
+
+	# android sdk/jdk: only the deterministic branch (a path that exists) is
+	# pinned exactly; fixable branches assert fix_value self-consistently
+	# since the fallback they land on depends on the machine.
+	var svc6: Node = ServiceT.new()
+	var real_dir := OS.get_cache_dir()
+	var sdk_ok: Dictionary = svc6._check_android_sdk(real_dir)
+	_check("android sdk check recognizes a path that exists",
+		sdk_ok.get("status", "") == "ok" and sdk_ok.get("detail", "") == real_dir, str(sdk_ok))
+	var sdk_unset: Dictionary = svc6._check_android_sdk("")
+	if sdk_unset.get("fixable", false):
+		_check("android sdk fix_value matches the conventional path it found",
+			sdk_unset.get("fix_value", "") == ServiceT.android_sdk_conventional_path(), str(sdk_unset))
+	var jdk_ok: Dictionary = svc6._check_android_jdk(real_dir)
+	_check("android jdk check recognizes a path that exists",
+		jdk_ok.get("status", "") == "ok" and jdk_ok.get("detail", "") == real_dir, str(jdk_ok))
+	var jdk_unset: Dictionary = svc6._check_android_jdk("")
+	if jdk_unset.get("fixable", false):
+		var java_home := OS.get_environment("JAVA_HOME")
+		var expected_fix := java_home if (java_home != "" and DirAccess.dir_exists_absolute(java_home)) else ServiceT.android_studio_jbr_path()
+		_check("android jdk fix_value matches whichever fallback it found",
+			jdk_unset.get("fix_value", "") == expected_fix, str(jdk_unset))
+	svc6.free()
 
 	print("VERIFY build_kit: %s" % ("PASS" if _fails == 0 else "FAIL (%d)" % _fails))
 	quit(0 if _fails == 0 else 1)
