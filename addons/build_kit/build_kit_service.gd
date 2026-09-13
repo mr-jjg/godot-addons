@@ -1064,24 +1064,32 @@ func _check_android_debug_keystore(keystore_path: String, keystore_user: String,
 		"Godot creates this automatically on first export, using the JDK configured above. Nothing to do here yet — Refresh after your first export to confirm it was created.")
 
 
-## Confirms an Android export preset exists and has its required base
-## config keys — Android's pipeline needs nothing else validated here.
+## Confirms an Android export preset exists, has its required base config
+## keys, and has an export_path Godot can actually write an APK to.
 func _check_android_preset() -> Dictionary:
 	var preset := load_preset("Android")
 	if preset.is_empty():
 		return _row("android.preset", "Android export preset", "fail", "",
 			"No Android export preset found. Create one in Project → Export (platform Android).")
+	var problems := PackedStringArray()
+	var export_path := str(preset["export_path"])
+	if export_path == "":
+		problems.append("no export path")
+	elif not export_path.ends_with(".apk"):
+		problems.append("export path must end in .apk")
 	var missing := _missing_base_keys(preset["section"])
 	if not missing.is_empty():
-		return _row("android.preset", "Android export preset", "warn",
-			"%s (%d missing base keys)" % [preset["name"], missing.size()],
-			"1. Press Fix — backfills the missing base keys\n2. Refresh preflight.", true)
-	return _row("android.preset", "Android export preset", "ok", "%s → %s" % [preset["name"], preset["export_path"]])
+		problems.append("%d missing base keys" % missing.size())
+	var detail := "%s → %s" % [preset["name"], preset["export_path"]]
+	if problems.is_empty():
+		return _row("android.preset", "Android export preset", "ok", detail)
+	return _row("android.preset", "Android export preset", "warn",
+		detail + " (" + ", ".join(problems) + ")",
+		"1. Press Fix — sets a default export path (and backfills missing base keys)\n2. Refresh preflight.", true)
 
 
-## Backfills missing base preset keys only — Android has no signing-team
-## fields to fix the way iOS does. Only writes export_presets.cfg, no
-## Editor Settings involved.
+## Backfills a missing/invalid export_path and missing base preset keys.
+## Only writes export_presets.cfg — no Editor Settings involved.
 func _fix_android_preset() -> Dictionary:
 	var preset := load_preset("Android")
 	if preset.is_empty():
@@ -1089,17 +1097,25 @@ func _fix_android_preset() -> Dictionary:
 	var cfg := ConfigFile.new()
 	if cfg.load("res://export_presets.cfg") != OK:
 		return err("Cannot parse export_presets.cfg.")
+	var msgs := PackedStringArray()
+	var export_path := str(preset["export_path"])
+	if export_path == "" or not export_path.ends_with(".apk"):
+		var default_path := "build/android/%s.apk" % clean_app_name()
+		cfg.set_value(str(preset["section"]), "export_path", default_path)
+		msgs.append("export_path=" + default_path)
 	var defaults := preset_base_defaults()
 	var healed := 0
 	for key in defaults:
 		if not cfg.has_section_key(str(preset["section"]), key):
 			cfg.set_value(str(preset["section"]), key, defaults[key])
 			healed += 1
+	if healed > 0:
+		msgs.append("backfilled %d base keys" % healed)
 	if cfg.save("res://export_presets.cfg") != OK:
 		return err("Cannot write export_presets.cfg.")
 	mark_dirty()
 	refresh_preflight()
-	return ok({"message": "backfilled %d base keys" % healed})
+	return ok({"message": ", ".join(msgs) if not msgs.is_empty() else "nothing to fix"})
 
 
 func _spawn_asc(command: String, bundle_id: String, log_name: String) -> Dictionary:

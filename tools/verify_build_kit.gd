@@ -250,6 +250,21 @@ func _initialize() -> void:
 		str(svc4.apply_fix("ios.app_record").get("error", "")) == "Needs an ASC API key (see the row above).")
 	svc4.free()
 
+	# Read-only (unlike Fix), so safe to exercise against the real repo's export_presets.cfg.
+	var svc5: Node = ServiceT.new()
+	var real_android_preset: Dictionary = svc5.load_preset("Android")
+	if not real_android_preset.is_empty():
+		var row: Dictionary = svc5._check_android_preset()
+		var real_export_path := str(real_android_preset.get("export_path", ""))
+		if real_export_path == "" or not real_export_path.ends_with(".apk"):
+			_check("android preset flags bad export_path",
+				str(row["status"]) == "warn" and str(row["detail"]).contains("export path"), str(row))
+		else:
+			_check("android preset ok with valid export_path", str(row["status"]) == "ok", str(row))
+	else:
+		print("  skip android preset export_path check (no real Android preset)")
+	svc5.free()
+
 	# real spawn round-trip (log + exit sentinel)
 	var log_path := OS.get_cache_dir().path_join("build_kit_verify").path_join("spawn.log")
 	var handle := Exec.spawn_shell("echo hello; exit 7", log_path)
