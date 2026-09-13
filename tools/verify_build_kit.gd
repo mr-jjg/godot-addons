@@ -50,13 +50,16 @@ application/bundle_identifier="com.example.game"
 func _initialize() -> void:
 	print("VERIFY build_kit: running")
 
-	# exec.gd quoting
-	_check("quote plain", Exec.quote("abc") == "'abc'")
-	_check("quote space", Exec.quote("a b") == "'a b'")
+	# exec.gd quoting — cmd.exe (double quotes) on Windows, POSIX (single
+	# quotes) elsewhere.
 	if OS.get_name() == "Windows":
-		_check("quote apostrophe", Exec.quote("a'b") == "'a''b'")
-		_check("command_line", Exec.command_line(PackedStringArray(["x", "a b"])) == "& 'x' 'a b'")
+		_check("quote plain", Exec.quote("abc") == "\"abc\"")
+		_check("quote space", Exec.quote("a b") == "\"a b\"")
+		_check("quote embedded quote", Exec.quote("a\"b") == "\"a\"\"b\"")
+		_check("command_line", Exec.command_line(PackedStringArray(["x", "a b"])) == "\"x\" \"a b\"")
 	else:
+		_check("quote plain", Exec.quote("abc") == "'abc'")
+		_check("quote space", Exec.quote("a b") == "'a b'")
 		_check("quote apostrophe", Exec.quote("a'b") == "'a'\\''b'")
 		_check("command_line", Exec.command_line(PackedStringArray(["x", "a b"])) == "'x' 'a b'")
 
@@ -289,19 +292,43 @@ func _initialize() -> void:
 		print("  skip android preset export_path check (no real Android preset)")
 	svc5.free()
 
-	# real spawn round-trip (log + exit sentinel)
+	# real spawn round-trip: log + tail capture.
 	var log_path := OS.get_cache_dir().path_join("build_kit_verify").path_join("spawn.log")
-	var handle := Exec.spawn_shell("echo hello; exit 7", log_path)
+	var handle := Exec.spawn_shell("echo hello", log_path)
 	_check("spawn ok", bool(handle.get("ok", false)), str(handle))
 	if handle.get("ok", false):
 		var tries := 0
 		while Exec.exit_code(handle["exit_path"]) < 0 and tries < 100:
 			OS.delay_msec(50)
 			tries += 1
-		_check("spawn exit code", Exec.exit_code(handle["exit_path"]) == 7)
+		_check("spawn exit code", Exec.exit_code(handle["exit_path"]) == 0)
 		_check("spawn log", Exec.read_all(log_path).contains("hello"))
 		var tail := Exec.read_from(log_path, 0)
 		_check("spawn tail", str(tail["text"]).contains("hello") and int(tail["offset"]) > 0)
+
+	# a nonzero exit code propagates correctly. shell_line has no subshell
+	# isolation on Windows, so `exit` needs a real child process — cmd.exe's
+	# own /c must stay unquoted for cmd to recognize it as the switch.
+	var exit_log_path := OS.get_cache_dir().path_join("build_kit_verify").path_join("spawn_exit.log")
+	var exit_shell_line := ("cmd.exe /c %s" % Exec.quote("exit 7")
+		if OS.get_name() == "Windows" else "exit 7")
+	var exit_handle := Exec.spawn_shell(exit_shell_line, exit_log_path)
+	_check("spawn nonzero exit ok", bool(exit_handle.get("ok", false)), str(exit_handle))
+	if exit_handle.get("ok", false):
+		var tries2 := 0
+		while Exec.exit_code(exit_handle["exit_path"]) < 0 and tries2 < 100:
+			OS.delay_msec(50)
+			tries2 += 1
+		_check("spawn nonzero exit code", Exec.exit_code(exit_handle["exit_path"]) == 7)
+
+	# real run() round-trip — this path has no other coverage (the "adb
+	# devices" tests above are pure string-parsing over synthetic output).
+	var run_ok: Dictionary = Exec.run(PackedStringArray(["cmd.exe", "/c", "echo hi"])
+		if OS.get_name() == "Windows" else PackedStringArray(["echo", "hi"]))
+	_check("run captures output", int(run_ok["code"]) == 0 and str(run_ok["output"]).contains("hi"), str(run_ok))
+	var run_bad: Dictionary = Exec.run(PackedStringArray(["cmd.exe", "/c", "exit 7"])
+		if OS.get_name() == "Windows" else PackedStringArray(["sh", "-c", "exit 7"]))
+	_check("run nonzero exit code", int(run_bad["code"]) == 7, str(run_bad))
 
 	# per-OS conventional-path picker (Android preflight groundwork)
 	_check("pick_by_os windows", ServiceT.pick_by_os("Windows", "W", "L", "M") == "W")

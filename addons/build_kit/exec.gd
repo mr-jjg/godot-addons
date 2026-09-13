@@ -9,34 +9,30 @@ extends RefCounted
 ## editor thread. Short probes (version checks, `defaults read`, `adb
 ## devices`) may use the blocking run().
 ##
-## Shells out via /bin/zsh on macOS/Linux, powershell.exe on Windows, picked
-## per call via _is_windows() so every other function stays branch-free.
+## Shells out via /bin/zsh on macOS/Linux, cmd.exe on Windows, picked per
+## call via _is_windows() so every other function stays branch-free.
+##
+## Windows uses cmd.exe, not PowerShell: its `>`/`2>&1` is real file-handle
+## redirection, immune to a lingering forked child (e.g. adb's own server)
+## blocking it the way a piped capture can.
 
 static func _is_windows() -> bool:
 	return OS.get_name() == "Windows"
 
 
-## Forces UTF-8 for native-process output — PS 5.1's redirection otherwise
-## re-encodes it through the console codepage, mangling non-ASCII bytes.
-const _PS_UTF8_PREAMBLE := "$OutputEncoding = [System.Text.UTF8Encoding]::new(); "
-
-
 ## Quote an argument literally for the platform's shell (POSIX ' -> '\'',
-## PowerShell ' -> '').
+## cmd.exe " -> "").
 static func quote(arg: String) -> String:
 	if _is_windows():
-		return "'" + arg.replace("'", "''") + "'"
+		return '"' + arg.replace('"', '""') + '"'
 	return "'" + arg.replace("'", "'\\''") + "'"
 
 
-## PowerShell treats a leading quoted string as an expression, not a
-## command — needs the call operator (&) to invoke it; POSIX shells don't.
 static func command_line(args: PackedStringArray) -> String:
 	var parts := PackedStringArray()
 	for a in args:
 		parts.append(quote(a))
-	var joined := " ".join(parts)
-	return "& " + joined if _is_windows() else joined
+	return " ".join(parts)
 
 
 ## Spawn a raw shell line detached; its output goes to log_path and its exit
@@ -52,15 +48,18 @@ static func spawn_shell(shell_line: String, log_path: String) -> Dictionary:
 		f.close()
 	var pid: int
 	if _is_windows():
-		# A nested powershell.exe, not a script block: `exit N` needs real
-		# subshell containment (mirrors the POSIX branch below), and output
-		# goes through .NET File I/O rather than `*>`/Out-File, which
-		# defaults to UTF-16-with-BOM in PS 5.1 and would corrupt the exit code.
-		var inner := _PS_UTF8_PREAMBLE + shell_line
-		var wrapped := "$out = & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command %s 2>&1 | Out-String; [System.IO.File]::WriteAllText(%s, $out); [System.IO.File]::WriteAllText(%s, $LASTEXITCODE.ToString())" % [
-			quote(inner), quote(log_path), quote(exit_path)]
-		pid = OS.create_process("powershell.exe",
-			["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", wrapped])
+		# A temp .bat file, not an inline /c string: cmd.exe's own ""-quoting
+		# doesn't survive being re-escaped as an argv element by
+		# OS.create_process. Space before the final `>` is load-bearing — a
+		# bare digit right before it reads as a file-handle number, not
+		# echo's argument, so it silently masks failures at exit code 0.
+		var bat_path := exit_path + ".bat"
+		var script := "%s > %s 2>&1\r\n(echo %%ERRORLEVEL%% > %s)\r\n" % [
+			shell_line, quote(log_path), quote(exit_path)]
+		var bf := FileAccess.open(bat_path, FileAccess.WRITE)
+		bf.store_string(script)
+		bf.close()
+		pid = OS.create_process("cmd.exe", ["/d", "/c", bat_path])
 	else:
 		# Subshell, not a brace group: an `exit` inside the command must not
 		# skip the exit-code sentinel write (the sentinel's existence = "finished").
@@ -131,11 +130,8 @@ static func run(args: PackedStringArray) -> Dictionary:
 	var out: Array = []
 	var code: int
 	if _is_windows():
-		# powershell.exe's own exit code doesn't automatically mirror a
-		# native command's exit code — it must be propagated explicitly.
-		var command := "%s%s; exit $LASTEXITCODE" % [_PS_UTF8_PREAMBLE, command_line(args)]
-		code = OS.execute("powershell.exe",
-			["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], out, true)
+		# No shell needed here — a bare argv array has nothing to re-escape.
+		code = OS.execute(args[0], args.slice(1), out, true)
 	else:
 		code = OS.execute("/bin/zsh", ["-lc", command_line(args)], out, true)
 	var text := ""

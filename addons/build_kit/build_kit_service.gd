@@ -555,9 +555,6 @@ func _next_stage(paths: Dictionary = {}) -> void:
 				] if was_upload else []),
 			})
 		else:
-			# TODO: exec.gd's Windows spawn_shell() can leave the install
-			# stage's exit sentinel unwritten even after adb install truly
-			# succeeds — this finish may never fire on Windows until that's fixed.
 			_finish({"ok": true, "title": "Installed on device",
 				"guidance": "The APK is installed — check the device."})
 		return
