@@ -76,7 +76,19 @@ static func default_config() -> Dictionary:
 			"preset": "iOS",
 			"build_number": 1,
 		},
+		"android": {
+			"preset": "Android",
+			"version_code": 1,
+		},
 	}
+
+
+## Fields JSON parses as floats but that must round-trip as ints (CFBundleVersion
+## "2" not "2.0"; same for Android's versionCode).
+const INT_CONFIG_FIELDS := [
+	["ios", "build_number"],
+	["android", "version_code"],
+]
 
 
 func load_config() -> Dictionary:
@@ -90,9 +102,8 @@ func load_config() -> Dictionary:
 					config[key].merge(parsed[key], true)
 				else:
 					config[key] = parsed[key]
-	# JSON numbers parse as floats; keep the build number an int so it
-	# round-trips as one (CFBundleVersion "2", not "2.0").
-	config["ios"]["build_number"] = int(config["ios"].get("build_number", 1))
+	for pair in INT_CONFIG_FIELDS:
+		config[pair[0]][pair[1]] = int(config[pair[0]].get(pair[1], 1))
 	migrate_config_secrets_to_env()
 	return config
 
@@ -319,9 +330,6 @@ static func parse_preset_text(text: String, platform: String, preset_name := "")
 	return {}
 
 
-## config[platform.to_lower()] doesn't exist for "android" yet (config schema
-## work is still ahead of us), so .get()'s default just falls through to
-## `platform` itself until that piece lands — nothing here depends on it.
 func load_preset(platform: String) -> Dictionary:
 	if not FileAccess.file_exists("res://export_presets.cfg"):
 		return {}

@@ -159,6 +159,8 @@ func _initialize() -> void:
 
 	# config defaults
 	_check("default config", int(ServiceT.default_config()["ios"]["build_number"]) == 1)
+	_check("default config android preset", ServiceT.default_config()["android"]["preset"] == "Android")
+	_check("default config android version_code", int(ServiceT.default_config()["android"]["version_code"]) == 1)
 	# ...and carries no credential fields — those belong in the gitignored .env
 	var defaults: Dictionary = ServiceT.default_config()
 	_check("default config holds no secrets",
