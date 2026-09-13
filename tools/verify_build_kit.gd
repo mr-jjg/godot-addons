@@ -61,18 +61,18 @@ func _initialize() -> void:
 		_check("command_line", Exec.command_line(PackedStringArray(["x", "a b"])) == "'x' 'a b'")
 
 	# classify.gd
-	var missing := Classify.classify("Step failed: IDEDistribution.DistributionAppRecordProviderError.missingApp(bundleId: \"com.x\")", {"bundle_id": "com.x"})
+	var missing := Classify.classify("Step failed: IDEDistribution.DistributionAppRecordProviderError.missingApp(bundleId: \"com.x\")", {"bundle_id": "com.x"}, "ios")
 	_check("classify missingApp", missing["id"] == "missing_app_record", str(missing))
 	_check("classify guidance splice", str(missing["guidance"]).contains("com.x"))
-	var conflict := Classify.classify("error: Moveborne has conflicting provisioning settings.")
+	var conflict := Classify.classify("error: Moveborne has conflicting provisioning settings.", {}, "ios")
 	_check("classify signing conflict", conflict["id"] == "signing_conflict")
-	var no_cert := Classify.classify("error: exportArchive No signing certificate \"iOS Distribution\" found\n** EXPORT FAILED **", {"team_id": "T1"})
+	var no_cert := Classify.classify("error: exportArchive No signing certificate \"iOS Distribution\" found\n** EXPORT FAILED **", {"team_id": "T1"}, "ios")
 	_check("classify missing dist cert", no_cert["id"] == "no_dist_cert", str(no_cert))
 	_check("classify dist cert splice", str(no_cert["guidance"]).contains("T1"))
-	var perm := Classify.classify("error: exportArchive Cloud signing permission error\nerror: exportArchive Provisioning profile \"X\" doesn't include signing certificate \"Y\".", {"key_id": "K9"})
+	var perm := Classify.classify("error: exportArchive Cloud signing permission error\nerror: exportArchive Provisioning profile \"X\" doesn't include signing certificate \"Y\".", {"key_id": "K9"}, "ios")
 	_check("classify cloud-signing permission first", perm["id"] == "cloud_signing_permission", str(perm))
 	_check("classify key id splice", str(perm["guidance"]).contains("K9"))
-	var stale := Classify.classify("error: exportArchive Provisioning profile \"X\" doesn't include signing certificate \"Y\".")
+	var stale := Classify.classify("error: exportArchive Provisioning profile \"X\" doesn't include signing certificate \"Y\".", {}, "ios")
 	_check("classify stale managed profile", stale["id"] == "profile_missing_cert", str(stale))
 	var generic := Classify.classify("something entirely novel")
 	_check("classify fallback", generic["id"] == "unknown")
@@ -80,8 +80,19 @@ func _initialize() -> void:
 	_check("classify empty config errors", cfg_err["id"] == "export_config_errors", str(cfg_err))
 	_check("classify links passthrough", str(missing.get("links", [])).contains("appstoreconnect.apple.com/apps"), str(missing))
 	_check("classify fallback links empty", (generic.get("links", [1]) as Array).is_empty())
-	var order := Classify.classify("error: exportArchive Error Downloading App Information\n** EXPORT FAILED **")
+	var order := Classify.classify("error: exportArchive Error Downloading App Information\n** EXPORT FAILED **", {}, "ios")
 	_check("classify specific beats generic", order["id"] == "missing_app_record", str(order))
+
+	# classify.gd platform scoping
+	var ios_on_android := Classify.classify("error: exportArchive Cloud signing permission error", {}, "android")
+	_check("classify ios rule doesn't match android", ios_on_android["id"] == "unknown", str(ios_on_android))
+	var android_incompatible := Classify.classify("adb: failed to install game.apk: INSTALL_FAILED_UPDATE_INCOMPATIBLE", {}, "android")
+	_check("classify android install incompatible", android_incompatible["id"] == "install_update_incompatible", str(android_incompatible))
+	var android_on_ios := Classify.classify("adb: failed to install game.apk: INSTALL_FAILED_UPDATE_INCOMPATIBLE", {}, "ios")
+	_check("classify android rule doesn't match ios", android_on_ios["id"] == "unknown", str(android_on_ios))
+	var neutral_templates := Classify.classify("No export template found for platform \"Android\".", {}, "android")
+	_check("classify unscoped rule matches android", neutral_templates["id"] == "no_export_templates", str(neutral_templates))
+	_check("classify no_export_templates wording is platform-neutral", not str(neutral_templates["guidance"]).contains("iOS"), str(neutral_templates))
 
 	# preset parsing
 	var preset := ServiceT.parse_preset_text(PRESET_FIXTURE, "iOS")
@@ -104,10 +115,23 @@ func _initialize() -> void:
 	_check("preset no android", ServiceT.parse_preset_text("[preset.0]\nname=\"Web\"\nplatform=\"Web\"\n", "Android").is_empty())
 
 	# derived paths
-	var paths := ServiceT.derive_paths("/proj/game/", "../build/ios/Game.ipa")
+	var paths := ServiceT.derive_paths("/proj/game/", "../build/ios/Game.ipa", "iOS")
 	_check("paths out", paths["out"] == "/proj/build/ios/Game.ipa", str(paths))
 	_check("paths app", paths["app"] == "Game")
 	_check("paths plist", paths["info_plist"] == "/proj/build/ios/Game/Game-Info.plist")
+
+	var android_paths := ServiceT.derive_paths("/proj/game/", "../build/android/game.apk", "Android")
+	_check("android paths out", android_paths["out"] == "/proj/build/android/game.apk", str(android_paths))
+	_check("android paths logs", android_paths["logs"] == "/proj/build/android/logs", str(android_paths))
+	_check("android paths has no ios-only keys",
+		not android_paths.has("xcodeproj") and not android_paths.has("archive")
+		and not android_paths.has("info_plist") and not android_paths.has("options_plist"),
+		str(android_paths))
+
+	# apksigner silent-failure detection
+	_check("apksigner missing detected", ServiceT.apksigner_warning_signature(
+		"...\n'apksigner' could not be found. Please check that the command is available...\nThe resulting APK is unsigned.\n") != "")
+	_check("apksigner clean log", ServiceT.apksigner_warning_signature("Project export for platform Android successful.") == "")
 
 	# export options plist
 	var up := ServiceT.make_export_options_xml("TEAM123456", true)

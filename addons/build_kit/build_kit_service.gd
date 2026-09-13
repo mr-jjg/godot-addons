@@ -333,21 +333,24 @@ func load_preset(platform: String) -> Dictionary:
 	return preset
 
 
-## Absolute paths derived from the preset's export_path.
-static func derive_paths(project_root: String, export_path: String) -> Dictionary:
+## Absolute paths derived from the preset's export_path. Android needs only
+## the shared core (out/dir/app/logs) — the rest is Xcode-project-specific.
+static func derive_paths(project_root: String, export_path: String, platform: String) -> Dictionary:
 	var out_abs := (project_root.rstrip("/") + "/" + export_path).simplify_path()
 	var build_dir := out_abs.get_base_dir()
 	var app := out_abs.get_file().get_basename()
-	return {
+	var out := {
 		"out": out_abs,
 		"dir": build_dir,
 		"app": app,
-		"xcodeproj": build_dir.path_join(app + ".xcodeproj"),
-		"archive": build_dir.path_join(app + ".xcarchive"),
-		"info_plist": build_dir.path_join(app).path_join(app + "-Info.plist"),
-		"options_plist": build_dir.path_join("build_kit_export_options.plist"),
 		"logs": build_dir.path_join("logs"),
 	}
+	if platform == "iOS":
+		out["xcodeproj"] = build_dir.path_join(app + ".xcodeproj")
+		out["archive"] = build_dir.path_join(app + ".xcarchive")
+		out["info_plist"] = build_dir.path_join(app).path_join(app + "-Info.plist")
+		out["options_plist"] = build_dir.path_join("build_kit_export_options.plist")
+	return out
 
 
 static func make_export_options_xml(team_id: String, upload: bool) -> String:
@@ -395,7 +398,7 @@ func start_build(upload := true) -> Dictionary:
 		return err("The iOS preset has no App Store Team ID. Use the preflight Fix button (or set application/app_store_team_id in Project → Export).")
 
 	var root := ProjectSettings.globalize_path("res://")
-	var paths := derive_paths(root, _preset["export_path"])
+	var paths := derive_paths(root, _preset["export_path"], "iOS")
 	var build_number := int(config["ios"].get("build_number", 1))
 	_context = {"bundle_id": _preset["bundle_id"], "team_id": _preset["team_id"],
 		"key_id": str(asc_credentials()["key_id"])}
@@ -466,6 +469,52 @@ func start_build(upload := true) -> Dictionary:
 	return ok({"stages": _stages.size() + 1, "build_number": build_number})
 
 
+## Export a debug APK and adb install it. sdk_path/serial come from the dock
+## (EditorSettings and the device picker aren't reachable from here); device
+## state is re-checked fresh rather than trusted.
+func start_build_android(sdk_path: String, serial := "") -> Dictionary:
+	if is_busy():
+		return err("A build is already running (stage: %s)." % _stage)
+	load_config()
+	_preset = load_preset("Android")
+	if _preset.is_empty():
+		return err("No Android export preset found. Create one in Project → Export (platform Android), then Refresh preflight.")
+
+	var adb := resolve_adb_path(sdk_path)
+	var devices := parse_adb_devices(str(Exec.run(PackedStringArray([adb, "devices", "-l"]))["output"]))
+	var ready: Array = devices.filter(func(d): return str(d["state"]) == "device")
+	if ready.is_empty():
+		return err("No authorized Android device/emulator connected. See the preflight Device row.")
+	var target := ""
+	if ready.size() == 1:
+		target = str(ready[0]["serial"])
+	else:
+		var matches: Array = ready.filter(func(d): return str(d["serial"]) == serial)
+		if matches.is_empty():
+			return err("%d devices connected — pick one in the preflight Device row." % ready.size())
+		target = serial
+
+	var root := ProjectSettings.globalize_path("res://")
+	var paths := derive_paths(root, _preset["export_path"], "Android")
+	_context = {}
+	_active_platform = "android"
+	_stages = [
+		{
+			"name": "export",
+			"shell": Exec.command_line(PackedStringArray([
+				OS.get_executable_path(), "--headless", "--path", root,
+				"--export-debug", _preset["name"], paths["out"],
+			])),
+		},
+		{
+			"name": "install",
+			"shell": Exec.command_line(PackedStringArray([adb, "-s", target, "install", "-r", paths["out"]])),
+		},
+	]
+	_next_stage(paths)
+	return ok({"stages": _stages.size() + 1})
+
+
 func cancel() -> void:
 	if _proc.has("pid"):
 		Exec.kill_tree(int(_proc["pid"]))
@@ -488,22 +537,29 @@ func _auth_flags() -> PackedStringArray:
 func _next_stage(paths: Dictionary = {}) -> void:
 	if paths.is_empty():
 		var root := ProjectSettings.globalize_path("res://")
-		paths = derive_paths(root, _preset["export_path"])
+		paths = derive_paths(root, _preset["export_path"], "iOS" if _active_platform == "ios" else "Android")
 	if _stages.is_empty():
-		var was_upload := _upload
-		if was_upload:
-			config["ios"]["build_number"] = int(config["ios"].get("build_number", 1)) + 1
-			save_config()
-		_finish({
-			"ok": true,
-			"title": "Uploaded to App Store Connect" if was_upload else "Signed .ipa exported",
-			"guidance": ("1. Processing takes a few minutes — press 'TestFlight status' to poll\n2. When Ready: TestFlight tab → Internal Testing → ＋ → add a group with yourself as tester (first time only)\n3. iPhone: install the TestFlight app, sign in with the same Apple ID — the build appears there."
-				if was_upload else "The .ipa is in %s." % paths["dir"]),
-			"links": ([
-				{"label": "Open My Apps", "url": "https://appstoreconnect.apple.com/apps"},
-				{"label": "TestFlight for iPhone", "url": "https://apps.apple.com/app/testflight/id899247664"},
-			] if was_upload else []),
-		})
+		if _active_platform == "ios":
+			var was_upload := _upload
+			if was_upload:
+				config["ios"]["build_number"] = int(config["ios"].get("build_number", 1)) + 1
+				save_config()
+			_finish({
+				"ok": true,
+				"title": "Uploaded to App Store Connect" if was_upload else "Signed .ipa exported",
+				"guidance": ("1. Processing takes a few minutes — press 'TestFlight status' to poll\n2. When Ready: TestFlight tab → Internal Testing → ＋ → add a group with yourself as tester (first time only)\n3. iPhone: install the TestFlight app, sign in with the same Apple ID — the build appears there."
+					if was_upload else "The .ipa is in %s." % paths["dir"]),
+				"links": ([
+					{"label": "Open My Apps", "url": "https://appstoreconnect.apple.com/apps"},
+					{"label": "TestFlight for iPhone", "url": "https://apps.apple.com/app/testflight/id899247664"},
+				] if was_upload else []),
+			})
+		else:
+			# TODO: exec.gd's Windows spawn_shell() can leave the install
+			# stage's exit sentinel unwritten even after adb install truly
+			# succeeds — this finish may never fire on Windows until that's fixed.
+			_finish({"ok": true, "title": "Installed on device",
+				"guidance": "The APK is installed — check the device."})
 		return
 	var stage: Dictionary = _stages.pop_front()
 	_stage = stage["name"]
@@ -514,6 +570,22 @@ func _next_stage(paths: Dictionary = {}) -> void:
 	_proc = handle
 	log_line.emit("\n── %s ──\n$ %s\n" % [_stage, stage["shell"]], _active_platform)
 	stage_changed.emit(_stage, _active_platform)
+
+
+## Godot's Android export can exit 0 while only WARNING that apksigner is
+## missing, leaving an unsigned APK — the four strings it emits for that.
+const APKSIGNER_WARNING_SIGNATURES := [
+	"'apksigner' could not be found",
+	"'apksigner' returned with error",
+	"'apksigner' verification of APK failed",
+	"All 'apksigner' tools located in Android SDK 'build-tools' directory failed",
+]
+
+static func apksigner_warning_signature(log_text: String) -> String:
+	for sig in APKSIGNER_WARNING_SIGNATURES:
+		if log_text.contains(sig):
+			return sig
+	return ""
 
 
 func _poll_pipeline() -> void:
@@ -532,10 +604,18 @@ func _poll_pipeline() -> void:
 		return
 	var log_path := str(_proc["log"])
 	_proc = {}
+	if code == 0 and _active_platform == "android" and _stage == "export":
+		var warning := apksigner_warning_signature(Exec.read_all(log_path))
+		if warning != "":
+			_stages = []
+			_finish({"ok": false, "stage": _stage, "title": "APK export produced an unsigned build",
+				"guidance": "Godot's export succeeded but couldn't sign the APK (%s). See the Android SDK preflight row — apksigner ships in the SDK's build-tools." % warning,
+				"log": log_path})
+			return
 	if code == 0:
 		_next_stage()
 		return
-	var diagnosis := Classify.classify(Exec.read_all(log_path), _context)
+	var diagnosis := Classify.classify(Exec.read_all(log_path), _context, _active_platform)
 	diagnosis["ok"] = false
 	diagnosis["stage"] = _stage
 	diagnosis["log"] = log_path

@@ -24,6 +24,8 @@ var _btn_testflight: Button
 var _btn_ipa: Button
 var _btn_cancel: Button
 var _btn_tf_status: Button
+var _btn_install: Button
+var _btn_cancel_android: Button
 var _p8_dialog: EditorFileDialog
 var _issuer_text := ""   # survives preflight-row rebuilds (rows re-render on refresh)
 var _bundle_text := ""   # ditto, for the create-preset form
@@ -76,6 +78,10 @@ func _build_ios_tab() -> Control:
 
 
 func _build_android_tab() -> Control:
+	_btn_install = Ui.button("▶ Build → Device", _on_build_android,
+		"Export a debug APK and adb install it on the selected/only device")
+	_btn_cancel_android = Ui.button("✕ Cancel", _on_cancel_android)
+	_btn_cancel_android.disabled = true
 	# Deferred this pass (proposal §8) — visibly disabled rather than absent,
 	# so intent is signaled instead of leaving the tab looking unfinished.
 	var btn_aab := Ui.button("▶ Build → Play Console", Callable(),
@@ -88,7 +94,7 @@ func _build_android_tab() -> Control:
 		"Release-keystore ingestion — not built yet")
 	btn_keystore.disabled = true  # TODO: analog of iOS's _make_asc_key_form
 	var build_col := VBoxContainer.new()
-	build_col.add_child(Ui.button_bar([btn_aab, btn_apk, btn_keystore]))
+	build_col.add_child(Ui.button_bar([_btn_install, _btn_cancel_android, btn_aab, btn_apk, btn_keystore]))
 	return _make_platform_tab("android", "Android", "Build Android", build_col)
 
 
@@ -236,6 +242,18 @@ func _on_cancel() -> void:
 	service.cancel()
 
 
+func _on_build_android() -> void:
+	var settings := EditorInterface.get_editor_settings()
+	var sdk_path := _editor_setting(settings, ANDROID_SDK_KEY)
+	var result: Dictionary = service.start_build_android(sdk_path, _selected_device)
+	if not result.get("ok", false):
+		_set_status("android", str(result.get("error", "")), Pal.ERROR, STATUS_TOAST_SECONDS)
+
+
+func _on_cancel_android() -> void:
+	service.cancel()
+
+
 func _on_tf_status() -> void:
 	var result: Dictionary = service.check_testflight_status()
 	if not result.get("ok", false):
@@ -248,11 +266,13 @@ func _on_tf_status() -> void:
 
 
 func _on_stage_changed(stage: String, platform: String) -> void:
-	if platform == "ios":
-		var busy := stage != ""
-		_btn_testflight.disabled = busy
-		_btn_ipa.disabled = busy
-		_btn_cancel.disabled = not busy
+	# One global pipeline — a build on either platform disables both tabs' buttons.
+	var busy := stage != ""
+	_btn_testflight.disabled = busy
+	_btn_ipa.disabled = busy
+	_btn_cancel.disabled = not busy
+	_btn_install.disabled = busy
+	_btn_cancel_android.disabled = not busy
 	if stage != "":
 		_set_status(platform, "Running: " + stage + "…", Pal.TEXT)
 
