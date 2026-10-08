@@ -217,6 +217,36 @@ static func parse_env(text: String) -> Dictionary:
 	return out
 
 
+# ── Release keystore (.env) ───────────────────────────────────────────────────
+#
+# These env vars override the preset's keystore/release fields, so the password
+# lives in the gitignored .env and never in the committed export_presets.cfg.
+
+const RELEASE_KEYSTORE_ENV := [
+	["path", "GODOT_ANDROID_KEYSTORE_RELEASE_PATH"],
+	["user", "GODOT_ANDROID_KEYSTORE_RELEASE_USER"],
+	["password", "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD"],
+]
+
+## {path, user, password} for the release key: environment, then repo .env ("" =
+## unset). A leading ~ in the path expands via HOME.
+func android_release_keystore() -> Dictionary:
+	var env := {}
+	for env_path in ENV_PATHS:
+		if FileAccess.file_exists(env_path):
+			var f := FileAccess.open(env_path, FileAccess.READ)
+			env.merge(parse_env(f.get_as_text()))
+	var creds := {}
+	for pair in RELEASE_KEYSTORE_ENV:
+		var value := OS.get_environment(str(pair[1]))
+		if value == "":
+			value = str(env.get(pair[1], ""))
+		creds[pair[0]] = value
+	if str(creds["path"]).begins_with("~"):
+		creds["path"] = OS.get_environment("HOME") + str(creds["path"]).substr(1)
+	return creds
+
+
 # ── Secrets (.env) ────────────────────────────────────────────────────────────
 #
 # build_kit.config.json is committed — it carries the preset name and build
@@ -1845,6 +1875,8 @@ func refresh_preflight() -> void:
 	rows.append(_check_devices())
 	rows.append(_check_android_templates())
 	rows.append(_check_android_preset())
+	var rk := android_release_keystore()
+	rows.append(_check_android_release_keystore(str(rk["path"]), str(rk["user"]), str(rk["password"])))
 	rows.append_array(_itch_rows())
 	preflight_rows = rows
 	preflight_changed.emit(rows)
@@ -2279,6 +2311,22 @@ func _check_android_debug_keystore(keystore_path: String, keystore_user: String,
 		return _row("android.debug_keystore", "Debug keystore", "ok", "Godot-managed default: " + default_path)
 	return _row("android.debug_keystore", "Debug keystore", "warn", "not yet generated",
 		"Godot creates this automatically on first export, using the JDK configured above. Nothing to do here yet — Refresh after your first export to confirm it was created.")
+
+
+## Parallel to the debug-keystore check but fed from android_release_keystore()'s
+## env trio. All-or-nothing; "none set" is a warn (only a release APK needs it).
+func _check_android_release_keystore(keystore_path: String, keystore_user: String, keystore_pass: String) -> Dictionary:
+	var configured := int(keystore_path != "") + int(keystore_user != "") + int(keystore_pass != "")
+	if configured == 0:
+		return _row("android.release_keystore", "Release keystore", "warn", "not configured",
+			"Only needed to build a release APK — the debug device install doesn't use it. Generate a release keystore, or add an existing one, from the Android build controls.")
+	if configured != 3:
+		return _row("android.release_keystore", "Release keystore", "fail", "incomplete config",
+			"A release keystore needs all three of GODOT_ANDROID_KEYSTORE_RELEASE_PATH / _USER / _PASSWORD in your .env, or none of them. Re-add the keystore from the Android build controls.")
+	if not FileAccess.file_exists(keystore_path):
+		return _row("android.release_keystore", "Release keystore", "fail", _toolchain_path_detail(keystore_path),
+			"GODOT_ANDROID_KEYSTORE_RELEASE_PATH points at a file that doesn't exist — re-generate or re-add the keystore from the Android build controls.")
+	return _row("android.release_keystore", "Release keystore", "ok", keystore_path)
 
 
 ## Confirms an Android export preset exists, has its required base config

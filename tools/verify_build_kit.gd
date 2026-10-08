@@ -420,6 +420,14 @@ func _initialize() -> void:
 		partial.get("status", "") == "fail" and partial.get("id", "") == "android.debug_keystore", str(partial))
 	var none_configured: Dictionary = svc3._check_android_debug_keystore("", "", "")
 	_check("debug keystore allows none configured", none_configured.get("status", "") != "fail", str(none_configured))
+	# release keystore: same all-or-nothing grouping, but "none set" is a warn
+	# (only a release APK needs it). File-existence branch untested, as above.
+	var rk_none: Dictionary = svc3._check_android_release_keystore("", "", "")
+	_check("release keystore none configured warns",
+		rk_none.get("status", "") == "warn" and rk_none.get("id", "") == "android.release_keystore", str(rk_none))
+	var rk_partial: Dictionary = svc3._check_android_release_keystore("/some/ks.keystore", "upload", "")
+	_check("release keystore flags partial config",
+		rk_partial.get("status", "") == "fail" and str(rk_partial.get("detail", "")) == "incomplete config", str(rk_partial))
 	svc3.free()
 
 	# android sdk/jdk: only the deterministic branch (a path that exists) is
