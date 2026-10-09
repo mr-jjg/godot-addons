@@ -2633,6 +2633,69 @@ func set_asc_issuer(issuer: String) -> Dictionary:
 	return ok({"message": "Issuer ID saved to %s." % env_file})
 
 
+# ── Release keystore generation ───────────────────────────────────────────────
+
+## Random keystore password from the crypto RNG. Only ever lives in .env, never
+## typed — this is the resettable Play upload key.
+static func random_password(length := 24) -> String:
+	var alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	var bytes := Crypto.new().generate_random_bytes(length)
+	var out := ""
+	for b in bytes:
+		out += alphabet[b % alphabet.length()]
+	return out
+
+
+## keytool ships in the JDK, not reliably on PATH — prefer <jdk>/bin/keytool,
+## else the bare name (mirrors resolve_adb_path).
+static func resolve_keytool_path(jdk_path: String) -> String:
+	var exe_name := "keytool.exe" if OS.get_name() == "Windows" else "keytool"
+	if jdk_path != "":
+		var candidate := jdk_path.path_join("bin").path_join(exe_name)
+		if FileAccess.file_exists(candidate):
+			return candidate
+	return exe_name
+
+
+## Generated release keystore + upload cert: beside Godot's debug keystore (out
+## of the repo, cross-platform), named per project.
+static func release_keystore_dir() -> String:
+	return OS.get_data_dir().path_join("godot/keystores")
+
+
+static func release_keystore_path() -> String:
+	return release_keystore_dir().path_join(clean_app_name() + "_release.keystore")
+
+
+static func upload_cert_path() -> String:
+	return release_keystore_dir().path_join(clean_app_name() + "_upload_cert.pem")
+
+
+## keytool -genkeypair for the upload key. Long validity so the key outlives the
+## app; dname is cosmetic (Play identifies the key by fingerprint).
+static func keytool_genkeypair_args(keytool: String, keystore_path: String, alias: String, password: String, dname: String) -> PackedStringArray:
+	return PackedStringArray([
+		keytool, "-genkeypair", "-v",
+		"-keystore", keystore_path,
+		"-alias", alias,
+		"-keyalg", "RSA", "-keysize", "2048",
+		"-validity", "10000",
+		"-storepass", password, "-keypass", password,
+		"-dname", dname,
+	])
+
+
+## keytool -exportcert -rfc → the PEM upload cert, for one-time Play App Signing
+## registration.
+static func keytool_exportcert_args(keytool: String, keystore_path: String, alias: String, password: String, pem_path: String) -> PackedStringArray:
+	return PackedStringArray([
+		keytool, "-exportcert", "-rfc",
+		"-keystore", keystore_path, "-alias", alias,
+		"-storepass", password,
+		"-file", pem_path,
+	])
+
+
 # ── Fixes ─────────────────────────────────────────────────────────────────────
 
 ## The preset fix: writes export_project_only=true and, when the preset has no

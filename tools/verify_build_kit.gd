@@ -430,6 +430,42 @@ func _initialize() -> void:
 		rk_partial.get("status", "") == "fail" and str(rk_partial.get("detail", "")) == "incomplete config", str(rk_partial))
 	svc3.free()
 
+	# release keystore generation — the pure parts of the generate Fix (3b)
+	var pw := ServiceT.random_password(24)
+	_check("random_password length", pw.length() == 24, pw)
+	var pw_alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	var pw_all_in := true
+	for ch in pw:
+		if not pw_alphabet.contains(ch):
+			pw_all_in = false
+	_check("random_password alphabet", pw_all_in, pw)
+	_check("random_password is random", ServiceT.random_password(24) != ServiceT.random_password(24))
+	var kt_exe := "keytool.exe" if OS.get_name() == "Windows" else "keytool"
+	_check("resolve_keytool_path falls back to bare name", ServiceT.resolve_keytool_path("") == kt_exe)
+	var fake_jdk := OS.get_cache_dir().path_join("build_kit_verify").path_join("fakejdk")
+	DirAccess.make_dir_recursive_absolute(fake_jdk.path_join("bin"))
+	var kt_file := fake_jdk.path_join("bin").path_join(kt_exe)
+	var ktf := FileAccess.open(kt_file, FileAccess.WRITE)
+	if ktf != null:
+		ktf.close()
+	_check("resolve_keytool_path prefers the JDK's bin",
+		ServiceT.resolve_keytool_path(fake_jdk) == kt_file, ServiceT.resolve_keytool_path(fake_jdk))
+	_check("release_keystore_path under keystores dir + suffix",
+		ServiceT.release_keystore_path().begins_with(ServiceT.release_keystore_dir())
+		and ServiceT.release_keystore_path().ends_with("_release.keystore"), ServiceT.release_keystore_path())
+	_check("upload_cert_path suffix",
+		ServiceT.upload_cert_path().ends_with("_upload_cert.pem"), ServiceT.upload_cert_path())
+	var gen := ServiceT.keytool_genkeypair_args("keytool", "/ks.keystore", "upload", "SECRET", "CN=Game")
+	_check("genkeypair keyalg RSA", gen.has("-genkeypair") and gen[gen.find("-keyalg") + 1] == "RSA", str(gen))
+	_check("genkeypair validity 10000", gen[gen.find("-validity") + 1] == "10000", str(gen))
+	_check("genkeypair store+key password",
+		gen[gen.find("-storepass") + 1] == "SECRET" and gen[gen.find("-keypass") + 1] == "SECRET", str(gen))
+	_check("genkeypair dname + alias",
+		gen[gen.find("-dname") + 1] == "CN=Game" and gen[gen.find("-alias") + 1] == "upload", str(gen))
+	var cert := ServiceT.keytool_exportcert_args("keytool", "/ks.keystore", "upload", "SECRET", "/out.pem")
+	_check("exportcert rfc to pem",
+		cert.has("-exportcert") and cert.has("-rfc") and cert[cert.find("-file") + 1] == "/out.pem", str(cert))
+
 	# android sdk/jdk: only the deterministic branch (a path that exists) is
 	# pinned exactly; fixable branches assert fix_value self-consistently
 	# since the fallback they land on depends on the machine.
