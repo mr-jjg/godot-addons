@@ -2319,7 +2319,8 @@ func _check_android_release_keystore(keystore_path: String, keystore_user: Strin
 	var configured := int(keystore_path != "") + int(keystore_user != "") + int(keystore_pass != "")
 	if configured == 0:
 		return _row("android.release_keystore", "Release keystore", "warn", "not configured",
-			"Only needed to build a release APK — the debug device install doesn't use it. Generate a release keystore, or add an existing one, from the Android build controls.")
+			"Only needed to build a release APK — the debug device install doesn't use it. Press Fix to generate one (random upload-key password, saved to .env), or add an existing keystore from the Android build controls.",
+			true)
 	if configured != 3:
 		return _row("android.release_keystore", "Release keystore", "fail", "incomplete config",
 			"A release keystore needs all three of GODOT_ANDROID_KEYSTORE_RELEASE_PATH / _USER / _PASSWORD in your .env, or none of them. Re-add the keystore from the Android build controls.")

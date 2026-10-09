@@ -753,6 +753,17 @@ func _on_fix(id: String, platform: String, fix_value: String) -> void:
 		_set_status(platform, "Editor Settings updated: %s" % fix_value, Pal.TEXT, STATUS_TOAST_SECONDS)
 		service.refresh_preflight()
 		return
+	if id == "android.release_keystore":
+		# keytool runs synchronously and briefly freezes the editor — paint a
+		# heads-up first. Yield real time (not one process_frame): the blocking
+		# call would otherwise stall the main loop before the label's redraw runs.
+		_set_status(platform, "Generating release keystore — the editor will pause for a few seconds…", Pal.TEXT)
+		await get_tree().create_timer(0.1).timeout
+		var jdk_path := _editor_setting(EditorInterface.get_editor_settings(), ANDROID_JDK_KEY)
+		var ks_result: Dictionary = service.apply_fix(id, {"jdk_path": jdk_path})
+		_set_status(platform, str(ks_result.get("message", ks_result.get("error", ""))),
+			Pal.TEXT if ks_result.get("ok", false) else Pal.ERROR, STATUS_TOAST_SECONDS)
+		return
 	var result: Dictionary = service.apply_fix(id, {"team_id": _selected_team} if id == "ios.preset" else {})
 	_set_status(platform, str(result.get("message", result.get("error", ""))),
 		Pal.TEXT if result.get("ok", false) else Pal.ERROR, STATUS_TOAST_SECONDS)
