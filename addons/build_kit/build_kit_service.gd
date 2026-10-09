@@ -2696,6 +2696,43 @@ static func keytool_exportcert_args(keytool: String, keystore_path: String, alia
 	])
 
 
+## The android.release_keystore Fix: mint a keystore + save its creds to .env.
+## Synchronous — keytool is a bounded local call (the dock warns before the brief
+## freeze); refuses an existing file so a real signing key is never clobbered.
+## keystore_path is overridable for the verifier.
+func _fix_release_keystore(jdk_path: String, keystore_path := "") -> Dictionary:
+	if jdk_path == "":
+		return err("Configure the Java SDK path first — see the Java SDK preflight row.")
+	if keystore_path == "":
+		keystore_path = release_keystore_path()
+	if FileAccess.file_exists(keystore_path):
+		return err("A release keystore already exists at %s — generating a new one would orphan its signing identity. Remove it deliberately, or add it as an existing keystore, instead." % keystore_path)
+	var keytool := resolve_keytool_path(jdk_path)
+	var alias := "upload"
+	var password := random_password()
+	DirAccess.make_dir_recursive_absolute(keystore_path.get_base_dir())
+	var gen := Exec.run(keytool_genkeypair_args(keytool, keystore_path, alias, password, "CN=" + clean_app_name()))
+	if int(gen["code"]) != 0:
+		return err("keytool could not create the keystore: %s" % str(gen["output"]).strip_edges().left(300))
+	# Valid for signing now — record the creds before the (optional) cert export.
+	var env_file := write_env_vars({
+		"GODOT_ANDROID_KEYSTORE_RELEASE_PATH": keystore_path,
+		"GODOT_ANDROID_KEYSTORE_RELEASE_USER": alias,
+		"GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD": password,
+	})
+	if env_file == "":
+		return err("Keystore created at %s, but %s could not be written." % [keystore_path, env_write_path()])
+	var pem := upload_cert_path()
+	var cert := Exec.run(keytool_exportcert_args(keytool, keystore_path, alias, password, pem))
+	refresh_preflight()
+	var msg := "Release keystore created at %s; credentials saved to %s." % [keystore_path, env_file]
+	if int(cert["code"]) == 0:
+		msg += " Upload certificate: %s." % pem
+	else:
+		msg += " (Upload-certificate export failed — only needed for Play registration; re-run then.)"
+	return ok({"message": msg})
+
+
 # ── Fixes ─────────────────────────────────────────────────────────────────────
 
 ## The preset fix: writes export_project_only=true and, when the preset has no
@@ -2723,6 +2760,8 @@ func apply_fix(id: String, opts: Dictionary = {}) -> Dictionary:
 			return _fix_itch_channels()
 		"itch.web":
 			return _fix_itch_web()
+		"android.release_keystore":
+			return _fix_release_keystore(str(opts.get("jdk_path", "")))
 	return err("No fix for '%s'." % id)
 
 

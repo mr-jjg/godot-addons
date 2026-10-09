@@ -281,7 +281,29 @@ func _initialize() -> void:
 		print("  skip apply_fix routes android.preset (a real Android preset exists in export_presets.cfg)")
 	_check("apply_fix routes ios.app_record",
 		str(svc4.apply_fix("ios.app_record").get("error", "")) == "Needs an ASC API key (see the row above).")
+	# no jdk_path in opts → the Fix's first guard fires (no keytool is run)
+	_check("apply_fix routes android.release_keystore",
+		str(svc4.apply_fix("android.release_keystore").get("error", "")).contains("Java SDK"))
 	svc4.free()
+
+	# release keystore Fix — only the two guard branches that return before
+	# shelling out to keytool (generating for real is excluded, like the other
+	# fixes that touch the toolchain/network/disk).
+	var rk_fix_svc: Node = ServiceT.new()
+	_check("release keystore fix needs a jdk",
+		str(rk_fix_svc._fix_release_keystore("").get("error", "")).contains("Java SDK"))
+	var existing_ks := OS.get_cache_dir().path_join("build_kit_verify").path_join("existing.keystore")
+	DirAccess.make_dir_recursive_absolute(existing_ks.get_base_dir())
+	var ef := FileAccess.open(existing_ks, FileAccess.WRITE)
+	if ef != null:
+		ef.store_string("not empty")
+		ef.close()
+	var overwrite_res: Dictionary = rk_fix_svc._fix_release_keystore("/any/jdk", existing_ks)
+	_check("release keystore fix refuses to overwrite",
+		not overwrite_res.get("ok", true) and str(overwrite_res.get("error", "")).contains("already exists"), str(overwrite_res))
+	_check("release keystore fix left the existing file intact",
+		FileAccess.open(existing_ks, FileAccess.READ).get_as_text() == "not empty")
+	rk_fix_svc.free()
 
 	# Read-only (unlike Fix), so safe to exercise against the real repo's export_presets.cfg.
 	var svc5: Node = ServiceT.new()
