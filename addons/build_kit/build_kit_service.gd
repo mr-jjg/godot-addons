@@ -92,7 +92,6 @@ static func default_config() -> Dictionary:
 		},
 		"android": {
 			"preset": "Android",
-			"version_code": 1,
 		},
 		# user/game = the itch.io page (https://<user>.itch.io/<game>). channels
 		# empty = auto-discover from export presets (Web→html5, Windows
@@ -108,10 +107,9 @@ static func default_config() -> Dictionary:
 
 
 ## Fields JSON parses as floats but that must round-trip as ints (CFBundleVersion
-## "2" not "2.0"; same for Android's versionCode).
+## "2" not "2.0").
 const INT_CONFIG_FIELDS := [
 	["ios", "build_number"],
-	["android", "version_code"],
 ]
 
 
@@ -683,6 +681,20 @@ static func make_export_options_xml(team_id: String, upload: bool) -> String:
 """ % [destination, team_id]
 
 
+## Increment version/code in the preset's options and return the new value (-1 on
+## failure). The preset is the single source of truth for the release code; an
+## unset value counts from 1. Path overridable for the verifier.
+static func _bump_preset_version_code(section: String, path := "res://export_presets.cfg") -> int:
+	var cfg := ConfigFile.new()
+	if cfg.load(path) != OK:
+		return -1
+	var next := int(cfg.get_value(section + ".options", "version/code", 1)) + 1
+	cfg.set_value(section + ".options", "version/code", next)
+	if cfg.save(path) != OK:
+		return -1
+	return next
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 func is_busy() -> bool:
@@ -886,6 +898,8 @@ func _next_stage(paths: Dictionary = {}) -> void:
 		elif _active_platform == "itch":
 			_finish(_itch_success_result())
 		elif _android_release:
+			if _bump_preset_version_code(str(_preset["section"])) < 0:
+				push_warning("build_kit: couldn't bump version/code in the preset")
 			_finish({"ok": true, "title": "Signed release APK exported",
 				"guidance": "The release APK is in %s." % paths["dir"],
 				"links": [{"label": "Open folder", "url": paths["dir"]}]})

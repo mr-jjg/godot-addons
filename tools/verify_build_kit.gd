@@ -128,6 +128,23 @@ func _initialize() -> void:
 		str(android_preset))
 	_check("preset no android", ServiceT.parse_preset_text("[preset.0]\nname=\"Web\"\nplatform=\"Web\"\n", "Android").is_empty())
 
+	# version_code bump in a preset's options — the preset is the single source of truth
+	var vc_path := "user://verify_build_kit_vc.cfg"
+	var vcf := FileAccess.open(vc_path, FileAccess.WRITE)
+	vcf.store_string("[preset.0]\nname=\"Android\"\nplatform=\"Android\"\nexport_path=\"build/android/g.apk\"\n[preset.0.options]\nversion/code=3\n")
+	vcf.close()
+	_check("bump_preset_version_code returns next", ServiceT._bump_preset_version_code("preset.0", vc_path) == 4)
+	var vc_read := ConfigFile.new()
+	vc_read.load(vc_path)
+	_check("version/code bumped in preset", int(vc_read.get_value("preset.0.options", "version/code", -1)) == 4)
+	# an unset version/code counts from 1, so the first bump yields 2
+	var vc_path2 := "user://verify_build_kit_vc2.cfg"
+	var vcf2 := FileAccess.open(vc_path2, FileAccess.WRITE)
+	vcf2.store_string("[preset.0]\nname=\"Android\"\nplatform=\"Android\"\n[preset.0.options]\npackage/name=\"\"\n")
+	vcf2.close()
+	_check("bump defaults unset to 1 then +1", ServiceT._bump_preset_version_code("preset.0", vc_path2) == 2)
+	_check("bump missing file returns -1", ServiceT._bump_preset_version_code("preset.0", "user://nope_vc.cfg") == -1)
+
 	# derived paths
 	var paths := ServiceT.derive_paths("/proj/game/", "../build/ios/Game.ipa", "iOS")
 	_check("paths out", paths["out"] == "/proj/build/ios/Game.ipa", str(paths))
@@ -171,7 +188,6 @@ func _initialize() -> void:
 	# config defaults
 	_check("default config", int(ServiceT.default_config()["ios"]["build_number"]) == 1)
 	_check("default config android preset", ServiceT.default_config()["android"]["preset"] == "Android")
-	_check("default config android version_code", int(ServiceT.default_config()["android"]["version_code"]) == 1)
 	# ...and carries no credential fields — those belong in the gitignored .env
 	var defaults: Dictionary = ServiceT.default_config()
 	_check("default config holds no secrets",
