@@ -51,6 +51,7 @@ var _active_platform := ""       # platform owning the current build ("" = idle)
 var _proc := {}                  # active Exec.spawn handle (+offset)
 var _upload := false
 var _build_number := 0           # CFBundleVersion of the running iOS build
+var _android_release := false    # release-APK export (finishes at disk, no install)
 var _context := {}               # bundle_id / team_id for classify + guidance
 var _preset := {}                # parsed iOS preset (cached at build start)
 
@@ -793,6 +794,50 @@ func start_build_android(sdk_path: String, serial := "") -> Dictionary:
 	return ok({"stages": _stages.size() + 1})
 
 
+## Export a release-signed APK to disk — one stage, no install. The release key
+## comes from the .env; Godot reads it from GODOT_ANDROID_KEYSTORE_RELEASE_* at
+## export, so we set those on our own process and let the spawned export inherit
+## them (the password never reaches a shell line or the log).
+func start_build_android_release() -> Dictionary:
+	if is_busy():
+		return err("A build is already running (stage: %s)." % _stage)
+	load_config()
+	_preset = load_preset("Android")
+	if _preset.is_empty():
+		return err("No Android export preset found. Create one in Project → Export (platform Android), then Refresh preflight.")
+	if not is_apk_export_path(str(_preset["export_path"])):
+		return err("The Android export preset needs an export path ending in .apk. Press Fix on the preflight 'Android export preset' row.")
+	var ks := android_release_keystore()
+	if str(ks["path"]) == "" or str(ks["user"]) == "" or str(ks["password"]) == "":
+		return err("No release keystore configured. See the Release keystore preflight row — press Fix to generate one.")
+	if not FileAccess.file_exists(str(ks["path"])):
+		return err("The release keystore file is missing (%s). Re-generate or re-add it from the Release keystore row." % ks["path"])
+
+	for pair in RELEASE_KEYSTORE_ENV:
+		OS.set_environment(str(pair[1]), str(ks[pair[0]]))
+
+	var root := ProjectSettings.globalize_path("res://")
+	var paths := derive_paths(root, _preset["export_path"], "Android")
+	_context = {}
+	_active_platform = "android"
+	_android_release = true
+	_stages = [
+		{
+			"name": "export",
+			"shell": Exec.command_line(PackedStringArray([
+				OS.get_executable_path(), "--headless", "--path", root,
+				"--export-release", _preset["name"], paths["out"],
+			])),
+		},
+	]
+	_next_stage(paths)
+	# Clear them now the spawned export has inherited them — otherwise
+	# android_release_keystore()'s env-first read shadows .env on the next build.
+	for pair in RELEASE_KEYSTORE_ENV:
+		OS.unset_environment(str(pair[1]))
+	return ok({"stages": _stages.size() + 1})
+
+
 func cancel() -> void:
 	if _proc.has("pid"):
 		Exec.kill_tree(int(_proc["pid"]))
@@ -840,6 +885,10 @@ func _next_stage(paths: Dictionary = {}) -> void:
 			})
 		elif _active_platform == "itch":
 			_finish(_itch_success_result())
+		elif _android_release:
+			_finish({"ok": true, "title": "Signed release APK exported",
+				"guidance": "The release APK is in %s." % paths["dir"],
+				"links": [{"label": "Open folder", "url": paths["dir"]}]})
 		else:
 			_finish({"ok": true, "title": "Installed on device",
 				"guidance": "The APK is installed — check the device."})
@@ -954,6 +1003,7 @@ func _finish(result: Dictionary) -> void:
 	_stage = ""
 	_stage_def = {}
 	_active_platform = ""
+	_android_release = false
 	_proc = {}
 	_itch_build = {}
 	build_finished.emit(result, platform)
