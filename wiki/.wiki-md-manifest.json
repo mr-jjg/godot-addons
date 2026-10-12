@@ -1,6 +1,6 @@
 {
   "ws:mql353ht-01pe-yb8909": {
-    "version": 823,
+    "version": 1032,
     "files": {
       "godot-addons/editor-tool-kit/index.md": "6f3160bb7496bbf110a51a4ccd7cf9c5025fd3cd550f875952cbdadc3b566cef",
       "godot-addons/ui-kit/index.md": "9c2ca18b9a8d4c42faec03e147e0afcee6c5672db0d8f10fff1d9054bedd6dcc",
@@ -77,7 +77,26 @@
       "godot-addons/build-kit/adrs/a-signed-in-xcode-session-outranks-the-api-key-for-signing-auth.md": "8bd32b7b49f24bdfd3be7de6879e77c7cc2f4910f9091c48daa069a0364b1f1e",
       "godot-addons/build-kit/adrs/asc-credentials-live-in-the-repo-env-never-in-the-committed-config.md": "33e82532da9773337ba2067cca5b5e30a5e3e87c9b2093fc67558883e133b3c4",
       "godot-addons/build-kit/adrs/known-failures-are-classified-into-plain-language-guidance-never-a-raw-log.md": "868e874827b1e3401d358653bb871a07b0154897067d29832eb033d8e41bdacc",
-      "godot-addons/build-kit/adrs/the-api-key-is-validated-against-the-preset-s-team-before-any-probe-it-makes-is-trusted.md": "5d288bdf50903048ce5590b5aa3385e6f70a58a3ab8f00b28b0a0afc78971f3e"
+      "godot-addons/build-kit/adrs/the-api-key-is-validated-against-the-preset-s-team-before-any-probe-it-makes-is-trusted.md": "5d288bdf50903048ce5590b5aa3385e6f70a58a3ab8f00b28b0a0afc78971f3e",
+      "godot-addons/achievements-kit/index.md": "6a3bf163c7c45dfe80e3f69ad10b845aff7c44bce6f027383ff01a2758b1e1e0",
+      "godot-addons/achievements-kit/architecture/index.md": "684601cf04dbd3de383b63ac764ed75f4c5d363d42578beb72dd6ea23f1a2073",
+      "godot-addons/achievements-kit/usage/index.md": "f8985af7855eb1b128465a5062f53f92050a2585fd09cf6a177f95d84fd46029",
+      "godot-addons/achievements-kit/adrs/index.md": "feeb89b490e54d840cff3f06c596321f7aa2fbbd06660321a68e09385998a9d6",
+      "godot-addons/achievements-kit/architecture/achievements-kit/index.md": "d65dfb0434db99034aa87dc0c169a7a143ec1ab36ebc06196cad4e0941f036a8",
+      "godot-addons/achievements-kit/architecture/achievements-kit/achkittracker.md": "9bdd7ad17163174b76f82f365ade1f3d9bb8faecdc24fbb0033d27822ca8b9d2",
+      "godot-addons/achievements-kit/architecture/achievements-kit/definitions-kinds-achkitschema-and-achkitcodegen.md": "80374ccb65f81c9f4d02ac7b136288b581a3f6316db854c9e265469bfead38ef",
+      "godot-addons/achievements-kit/architecture/achievements-kit/the-store-contract.md": "d1de5182b6acfb64c408738e6f15ee65f5c1a15a53aaa704cd9b4c1d00a3334c",
+      "godot-addons/achievements-kit/architecture/achievements-kit/achkitsnapserbridge.md": "f177c40f5f65b40116d4c671fad922a3a9888c8bfd47e83242b0cd356ffa2312",
+      "godot-addons/achievements-kit/architecture/achievements-kit/achievements-dock.md": "2c7ea91ce12080c243dc3bf167be4e5914a5f97970f07749f1e19de3e553f8b1",
+      "godot-addons/achievements-kit/usage/getting-started-install-enable-configure.md": "0ef131eaf1e013b92a58051e77b457a082b463ab7cd3f02ecf507912eecb2427",
+      "godot-addons/achievements-kit/usage/integrating-into-a-game-kinds-tracker-reporting-snapser.md": "20c3114916ad221ba0a6a4dd7a735b3c11a6706eef0382fd4b635382550aa258",
+      "godot-addons/achievements-kit/usage/authoring-achievements-in-the-dock.md": "22be2dbef5a5c4f1809bf4b4e136a217404b6dfa456ff9fb9faa4602346a71cb",
+      "godot-addons/achievements-kit/usage/testing.md": "decdb561a057492b07a586b8b9c0bf5f4a1e8775d90a1e00b7079600c6f83b79",
+      "godot-addons/achievements-kit/adrs/definitions-are-generated-gdscript-consts-written-only-by-the-dock.md": "fd0f65bb673158408280cc967e3e5c48183e546fd7c53f966735f43ccc9e55fb",
+      "godot-addons/achievements-kit/adrs/per-player-truth-is-one-earned-bool-and-one-progress-int-per-achievement-in-the-game-s-synced-save.md": "0639cd847b46ec6003c496828b6b3e5e686594a90b791a0d3f781da1e854969c",
+      "godot-addons/achievements-kit/adrs/snapser-gets-one-aggregate-statistic-not-one-per-achievement.md": "6a4d7fdae52bf815c12cd8fea301f75d715cb10b9a42d51874daa04df9e9ffa2",
+      "godot-addons/achievements-kit/adrs/the-runtime-depends-on-nothing-the-snapser-bridge-is-duck-typed.md": "6031f458e5161a6fdea3f6856d498abcc1465c90bb54aea48db67c5435d04a7e",
+      "godot-addons/achievements-kit/adrs/in-game-ui-stays-per-game-the-kit-ships-view-models-signals-and-debug-actions.md": "be735d3136f39ba81670447b1e5899add881f70ac773e460283c01a82cb4f275"
     },
     "pages": {
       "toc:mql36lau-01pg-x14tg2": "godot-addons/editor-tool-kit/index.md",
@@ -155,7 +174,26 @@
       "decision-record:mtd8gkzh-000z-1lpprt": "godot-addons/build-kit/adrs/a-signed-in-xcode-session-outranks-the-api-key-for-signing-auth.md",
       "decision-record:mtd8gnwl-0011-eil0gd": "godot-addons/build-kit/adrs/asc-credentials-live-in-the-repo-env-never-in-the-committed-config.md",
       "decision-record:mtd8gqwl-0013-4mrn14": "godot-addons/build-kit/adrs/known-failures-are-classified-into-plain-language-guidance-never-a-raw-log.md",
-      "decision-record:mtd8gtzb-0015-y5ug72": "godot-addons/build-kit/adrs/the-api-key-is-validated-against-the-preset-s-team-before-any-probe-it-makes-is-trusted.md"
+      "decision-record:mtd8gtzb-0015-y5ug72": "godot-addons/build-kit/adrs/the-api-key-is-validated-against-the-preset-s-team-before-any-probe-it-makes-is-trusted.md",
+      "toc:mv5fie8z-002z-1vzlv8": "godot-addons/achievements-kit/index.md",
+      "toc:mv5fihp1-0031-gckvi5": "godot-addons/achievements-kit/architecture/index.md",
+      "toc:mv5fihqx-0033-ag3ff5": "godot-addons/achievements-kit/usage/index.md",
+      "toc:mv5fihsy-0035-sb2k9f": "godot-addons/achievements-kit/adrs/index.md",
+      "architecture:mv5firyl-0038-mhdb2": "godot-addons/achievements-kit/architecture/achievements-kit/index.md",
+      "architecture:mv5fixit-003a-4rlniu": "godot-addons/achievements-kit/architecture/achievements-kit/achkittracker.md",
+      "architecture:mv5fixl0-003c-7e7qqh": "godot-addons/achievements-kit/architecture/achievements-kit/definitions-kinds-achkitschema-and-achkitcodegen.md",
+      "architecture:mv5fixod-003e-th0tx2": "godot-addons/achievements-kit/architecture/achievements-kit/the-store-contract.md",
+      "architecture:mv5fixrb-003g-wczuch": "godot-addons/achievements-kit/architecture/achievements-kit/achkitsnapserbridge.md",
+      "architecture:mv5fixtb-003i-4o3p5x": "godot-addons/achievements-kit/architecture/achievements-kit/achievements-dock.md",
+      "document:mv5fmgs4-009q-pcgyo": "godot-addons/achievements-kit/usage/getting-started-install-enable-configure.md",
+      "document:mv5fmgu0-009s-6izlqb": "godot-addons/achievements-kit/usage/integrating-into-a-game-kinds-tracker-reporting-snapser.md",
+      "document:mv5fmgw1-009u-em0y49": "godot-addons/achievements-kit/usage/authoring-achievements-in-the-dock.md",
+      "document:mv5fmgyd-009w-13op6e": "godot-addons/achievements-kit/usage/testing.md",
+      "decision-record:mv5fodcq-00e0-nfbph": "godot-addons/achievements-kit/adrs/definitions-are-generated-gdscript-consts-written-only-by-the-dock.md",
+      "decision-record:mv5fosqi-00eo-chsfmg": "godot-addons/achievements-kit/adrs/per-player-truth-is-one-earned-bool-and-one-progress-int-per-achievement-in-the-game-s-synced-save.md",
+      "decision-record:mv5foss9-00eq-lymatc": "godot-addons/achievements-kit/adrs/snapser-gets-one-aggregate-statistic-not-one-per-achievement.md",
+      "decision-record:mv5fosx0-00es-51ld1r": "godot-addons/achievements-kit/adrs/the-runtime-depends-on-nothing-the-snapser-bridge-is-duck-typed.md",
+      "decision-record:mv5fosys-00eu-ccen1j": "godot-addons/achievements-kit/adrs/in-game-ui-stays-per-game-the-kit-ships-view-models-signals-and-debug-actions.md"
     },
     "assets": {}
   }
