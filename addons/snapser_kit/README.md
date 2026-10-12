@@ -78,6 +78,7 @@ When offline, every call returns `{ok:false, error:"offline"}` immediately, so g
 | Profile | `display_name()` (never empty), `set_display_name(name)`: trims, length-limits (3–16) and filters. Names are **not unique** (D33). |
 | Identity | `register_identity_provider(name, bridge)`, `link_account(provider)`, `switch_account(result)`, `linked_providers()`. Linking is **off** unless `link_providers` lists the provider; `[]` returns `disabled` (D35). |
 | Quests | `quests_fetch_active/assign/increment/claim` (requires `"quests": true`) |
+| Debug & inspection | `debug_snapshot()`, `fetch_stats()`, `cloud_save_fetch_remote()`, `cloud_save_force_push()`, `cloud_save_force_take_remote()`, `cloud_save_simulate_new_device()`, `cloud_save_delete_remote()`, `debug_login_anon(handle, mode)`, `debug_return_to_primary(mode)`, `debug_identities()`. See [Debug & inspection (0.3.0)](#debug--inspection-030). |
 
 Lower layers are public for advanced use:
 - `config` (`SnapKitConfig`)
@@ -135,6 +136,45 @@ Snapser rejects undeclared stat keys, events, boards and storage keys with a 404
 - **Release builds:** the kit warns once and sends anyway.
 
 Keep the section in step with the snapend: `tools/snapser/check_declarations.sh <game repo>`, or `SnapKitConfig.from_dict(cfg).declaration_problems(manifest)` in a headless test.
+
+## Debug & inspection (0.3.0)
+
+These calls back a game's in-game save and account tools: inspect the cloud-save bookkeeping, diff local against remote, force either side, replay a fresh install, and switch to a second anonymous identity to exercise a real account switch without platform sign-in.
+
+### The gate
+
+- **Read-only calls are ungated:** `debug_snapshot()`, `fetch_stats()`, `cloud_save_fetch_remote()`, `debug_identities()`, and the pure `SnapKitCloudSave.diff_rows()`.
+- **Mutating calls need `debug_tools_enabled`.** Otherwise they return `{ok:false, error:"debug_disabled"}` and send nothing. It defaults to `OS.is_debug_build()`. Set it from the game's own build policy **before `start()`**; the setter also flips `cloud_save.debug_tools_enabled`.
+- Every network call still passes the usual gate first. Offline answers `offline` at once, and an undeclared blob answers `undeclared`. For the `cloud_save_*` calls the order is: service gate, then cloud save enabled (`disabled`), then the debug gate.
+
+### Calls
+
+| Call | What it does |
+|---|---|
+| `debug_snapshot(with_local = true)` | Not a coroutine. `{online, booted, offline_reason, user_id, handle, linked, switched, debug_tools, primary_handle, cloud_save}`. `cloud_save` is `SnapKitCloudSave.debug_snapshot()`: `enabled, user_id, device_id, blob_key, access, has_synced, cas, version, synced_hash, synced_at, local_changed_at, dirty, busy, debounce_left_s, persisted, state_path, prefixes, sync_keys, merge_policy`, plus `local_hash` and `local_matches_synced` when `with_local`. Pass `false` to skip `export_local()`, since some stores flush on export. |
+| `fetch_stats()` | `{ok, error, stats:{key:int}}`: every stat the user holds (`GET /v1/statistics/settings/user-stats/{user_id}`). |
+| `cloud_save_fetch_remote()` | The blob as stored: `{ok, error, exists, cas, version, updated_at, device_id, data, hash}`. Waits for any running sync and changes nothing. |
+| `cloud_save_force_push()` | **Local wins exactly.** The remote becomes the local synced keys: no merge, no bool OR, remote-only keys disappear. It writes `version + 1` with the current CAS, retries a CAS race, and records the sync, so the next push is skipped. Returns `applied:"forced_local"`, `version`, `replaced` (the keys that changed remotely) and `conflict` (a race was met). |
+| `cloud_save_force_take_remote()` | **Remote wins exactly.** The local synced keys become the blob: no merge, no bool OR, no `merge_policy`. Local-only keys are removed when the store's `import_prefix` takes `replace`; `exact` is false when it doesn't. No blob gives `not_found` and changes nothing. It records the sync, so the next pull is `none`, and fires `cloud_save_applied`. Returns `applied:"forced_remote"`, `keys`, `dropped`, `exact`. |
+| `cloud_save_simulate_new_device()` | A fresh install of the **same** account. It wipes the local synced keys, forgets the bookkeeping, mints a new device id, then runs the normal first-sync pull, which takes the remote. Returns the pull's result plus `wiped`. `cloud_save_applied` fires for the wipe and again for the restore. |
+| `cloud_save_delete_remote()` | Deletes the user's blob and resets the bookkeeping, so the next sync is a first sync. A blob that is already gone is `ok` with `existed:false`. |
+| `SnapKitCloudSave.diff_rows(local, remote, policies, remote_is_newer)` | Static and pure. One row per key, sorted: `{key, status ("same", "local_only", "remote_only", "differs"), policy, local, remote, merge, take, account}` plus an `in_*` flag for each value column (an absent value is `null`). `merge` previews a both-changed pull, `take` a remote-only-change pull, and `account` a `switch_account`. A game that overrides `_merge()` still sees the **default** merge here. |
+| `debug_login_anon(handle = "", mode = "account")` | Becomes the anonymous user `handle`; `""` mints a fresh handle with the config's prefix. This stands in for signing in to another account on this device. The first call records the current handle as the **primary**, before switching. `mode`: `"account"` applies the real switch rule (D36, as `switch_account`), `"pull"` runs a normal first sync (merge), `"none"` swaps the session only. Returns `{ok, error, user_id, handle, previous_user_id, cloud_save?, warning?}`. |
+| `debug_return_to_primary(mode = "account")` | `debug_login_anon(primary, mode)`. Returns `no_primary` when none was recorded. |
+| `debug_identities()` | Not a coroutine. `[{handle, user_id, primary, current, created_at}]`, primary first. |
+
+A debug identity is a real anonymous login (`SnapKitAuth.login_anon_as()`): the handle is persisted and the session is not marked switched, so a lost session heals by anonymous re-login as that identity. `SnapKitAuth.is_switched()` reports an adopted provider session.
+
+### Caveats
+
+- **A revoke needs a force push, and another device ORs it back.** Bools are monotonic on every pull path, so a flag cleared locally comes back on the next sync while the blob still holds `true`. `cloud_save_force_push()` clears the blob, but any other device that still holds `true` restores it on its next pull.
+- **The identities file** is `snapser_kit_debug_identities.json` under `SnapKitConfig.data_root` (`debug_identities_path`). Like the cloud-save state file, it is written only while the config is online. It holds the primary handle. If it is lost while a debug identity is active, the session file holds only the debug handle and **the primary is gone**: nothing on the device can log back in as it. For a dev user that is cheap; show the primary handle in the tool so it can be noted.
+- **Leaving a provider account.** From an adopted provider session (`is_switched()`), `debug_login_anon` proceeds but adds `warning`. Only a new provider sign-in returns to that account; the recorded primary is the device's old anonymous handle.
+- **Queued analytics** are flushed as whichever user holds the session at flush time, so events queued just before a switch are attributed to the new user. That's acceptable for a debug-only path.
+
+## Version notes
+
+- **0.3.0**: debug and inspection APIs (above): `SnapKitCloudSave.debug_snapshot`, `fetch_remote`, `force_push`, `force_take_remote`, `simulate_new_device`, `delete_remote`, `diff_rows`; `SnapKitAuth.is_switched`, `login_anon_as`; `SnapKitService.debug_tools_enabled`, `debug_snapshot`, `fetch_stats`, the `cloud_save_*` debug wrappers and the debug anonymous identities. Existing behaviour is unchanged.
 
 ## Editor
 

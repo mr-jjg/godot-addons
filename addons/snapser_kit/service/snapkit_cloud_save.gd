@@ -85,6 +85,11 @@ extends Node
 ##     device id) persists at state_path (STATE_FILE under SnapKitConfig.data_root).
 ##   - Offline: pull()/push() return the transport's {ok:false, error:"offline"};
 ##     local play is unaffected and the next pause / change retries.
+##   - DEBUG & INSPECTION (v0.3.0): debug_snapshot() and fetch_remote() are
+##     read-only and ungated; diff_rows() is pure. force_push(),
+##     force_take_remote(), simulate_new_device() and delete_remote() rewrite
+##     the player's save or blob and refuse with "debug_disabled" unless
+##     debug_tools_enabled (SnapKitService sets it).
 ##
 ## A Node because it owns the debounce Timer and receives app lifecycle
 ## notifications; SnapKitService adds it as a child.
@@ -116,6 +121,12 @@ const APPLIED_REMOTE := "remote"
 const APPLIED_MERGED := "merged"
 ## switch_account -> adopt_account(): the existing account's save won (D36).
 const APPLIED_ACCOUNT := "account"
+## force_push(): the local synced keys replaced the remote blob exactly.
+const APPLIED_FORCED_LOCAL := "forced_local"
+## force_take_remote(): the remote blob replaced the local synced keys exactly.
+const APPLIED_FORCED_REMOTE := "forced_remote"
+## A debug call refused because debug_tools_enabled is false.
+const ERR_DEBUG_DISABLED := "debug_disabled"
 
 ## func(local: Dictionary, remote: Dictionary) -> Dictionary over the `data`
 ## maps. An invalid/empty Callable (or a non-Dictionary return) means
@@ -131,6 +142,9 @@ var access: String = SnapKitStorage.ACCESS_PRIVATE
 ## is at or after the last local change. A merge_func that wants the default
 ## policy should call default_merge(local, remote, last_remote_is_newer).
 var last_remote_is_newer: bool = true
+## Gate for the debug calls (force_push, force_take_remote, simulate_new_device,
+## delete_remote). Set by SnapKitService (its debug_tools_enabled setter).
+var debug_tools_enabled: bool = false
 
 var _storage: SnapKitStorage
 var _store: Object
@@ -699,6 +713,260 @@ static func account_wins(local: Dictionary, remote: Dictionary, policies: Dictio
 		if not remote.has(k) or typeof(remote[k]) == TYPE_BOOL:
 			out[k] = true
 	return out
+
+
+# ---- debug & inspection (v0.3.0) ---------------------------------------------
+
+## READ-ONLY, not a coroutine, ungated. The sync bookkeeping plus live flags:
+## {enabled, user_id (the bookkeeping's owner), device_id, blob_key, access,
+##  has_synced, cas, version, synced_hash, synced_at, local_changed_at, dirty,
+##  busy, debounce_left_s, persisted (the state file is written: config
+##  online), state_path, prefixes, sync_keys, merge_policy,
+##  local_hash?, local_matches_synced?}
+## The last two only with with_local; with_local=false skips export_local()
+## (a SaveStore-style store may flush on export).
+func debug_snapshot(with_local: bool = true) -> Dictionary:
+	var snap := {
+		"enabled": is_enabled(),
+		"user_id": state_user_id(),
+		"device_id": device_id(),
+		"blob_key": blob_key(),
+		"access": access,
+		"has_synced": bool(_state.get("has_synced", false)),
+		"cas": str(_state.get("cas", "")),
+		"version": int(_state.get("version", 0)),
+		"synced_hash": str(_state.get("synced_hash", "")),
+		"synced_at": int(_state.get("synced_at", 0)),
+		"local_changed_at": int(_state.get("local_changed_at", 0)),
+		"dirty": _dirty,
+		"busy": _busy,
+		"debounce_left_s": _timer.time_left if _timer != null and not _timer.is_stopped() else 0.0,
+		"persisted": _config != null and not _config.is_offline(),
+		"state_path": state_path,
+		"prefixes": sync_prefixes(),
+		"sync_keys": sync_keys(),
+		"merge_policy": merge_policies().duplicate(true),
+	}
+	if with_local:
+		var local_hash := data_hash(export_local())
+		snap["local_hash"] = local_hash
+		snap["local_matches_synced"] = bool(snap.has_synced) and local_hash == str(snap.synced_hash)
+	return snap
+
+
+## READ-ONLY COROUTINE, ungated. The remote blob as stored. Takes the lock, so it
+## never interleaves a CAS write; changes nothing locally or in the bookkeeping.
+## -> {ok, status, json, error, exists, cas, version, updated_at, device_id,
+##     data (decoded), hash (data_hash(data); "" when there is no blob)}
+func fetch_remote() -> Dictionary:
+	if not is_enabled():
+		return _disabled(_with(_remote_fields({}, false), {"cas": ""}))
+	await _lock()
+	var got: Dictionary = await _storage.get_json_blob(blob_key(), access)
+	_unlock()
+	var exists := bool(got.get("ok", false)) and bool(got.get("exists", false))
+	var res := _with(got, _remote_fields(parse_envelope(got.get("value")) if exists else {}, exists))
+	res.erase("value")
+	return res
+
+
+## DEBUG COROUTINE. Remote := exactly the local synced keys: local wins, no
+## merge, no bool OR, remote-only keys disappear. Reads the current CAS and
+## version, writes version + 1 with that CAS, retries a CAS race up to
+## MAX_CAS_ATTEMPTS, then records the sync (the next push() is skipped).
+## -> {ok, status, json, error, applied:"forced_local", version, conflict
+##     (a CAS race was met), replaced:PackedStringArray (changed_keys(remote, local))}
+func force_push() -> Dictionary:
+	var refused := _debug_refusal({"applied": APPLIED_NONE})
+	if not refused.is_empty():
+		return refused
+	if _timer != null:
+		_timer.stop()
+	await _lock()
+	bind_user(_storage.user_id())
+	var local := export_local()
+	var res: Dictionary = {}
+	var raced := false
+	for _attempt in MAX_CAS_ATTEMPTS:
+		var got: Dictionary = await _storage.get_json_blob(blob_key(), access)
+		if not got.ok:
+			res = _with(got, {"applied": APPLIED_NONE})
+			break
+		var env := parse_envelope(got.value) if got.exists else parse_envelope(null)
+		var version: int = int(env.version) + 1
+		var put: Dictionary = await _storage.put_json_blob_cas(blob_key(),
+			make_envelope(local, version, device_id(), int(Time.get_unix_time_from_system())),
+			str(got.cas) if got.exists else "", access)
+		if put.ok:
+			_record_sync(str(put.get("cas", "")), data_hash(local), version)
+			synced.emit("push")
+			res = _with(put, {"applied": APPLIED_FORCED_LOCAL, "version": version,
+				"replaced": changed_keys(env.data, local)})
+			break
+		res = _with(put, {"applied": APPLIED_NONE})
+		if not bool(put.get("conflict", false)):
+			break
+		raced = true
+	res["conflict"] = raced
+	_unlock()
+	return res
+
+
+## DEBUG COROUTINE. Local synced keys := exactly the remote blob: remote wins, no
+## merge, no bool OR, no policies. Local-only keys under the prefixes and exact
+## sync_keys are removed (_import_local(remote, true)), which needs a store whose
+## import_prefix takes `replace`; otherwise local-only keys survive and `exact`
+## is false. No blob -> {ok:false, error:"not_found"} and nothing changes.
+## Records the sync (CAS, hash, version), so the next pull() is "none".
+## Emits applied(keys) when something changed.
+## -> {ok, status, json, error, applied:"forced_remote", keys (changed, sorted),
+##     dropped (local keys removed), exact:bool, version}
+func force_take_remote() -> Dictionary:
+	var refused := _debug_refusal({"applied": APPLIED_NONE})
+	if not refused.is_empty():
+		return refused
+	if _timer != null:
+		_timer.stop()
+	await _lock()
+	bind_user(_storage.user_id())
+	var got: Dictionary = await _storage.get_json_blob(blob_key(), access)
+	if not got.ok:
+		_unlock()
+		return _with(got, {"applied": APPLIED_NONE})
+	if not got.exists:
+		_unlock()
+		var missing := SnapKitTransport.error_result(SnapKitErrors.NOT_FOUND, int(got.get("status", 404)))
+		return _with(missing, {"applied": APPLIED_NONE})
+	var env := parse_envelope(got.value)
+	var before := export_local()
+	_import_local(env.data, true)
+	var after := export_local()
+	_record_sync(str(got.cas), data_hash(after), int(env.version))
+	synced.emit("pull")
+	var dropped := PackedStringArray()
+	for k in before:
+		if not after.has(k):
+			dropped.append(str(k))
+	dropped.sort()
+	got.erase("value")
+	_unlock()
+	return _with(got, {"applied": APPLIED_FORCED_REMOTE, "keys": changed_keys(before, after),
+		"dropped": dropped, "exact": _import_arity() >= 3, "version": int(env.version)})
+
+
+## DEBUG COROUTINE. Behave like a fresh install of the SAME account: drop every
+## local synced key (_import_local({}, true); needs a store with `replace`, see
+## `exact`), forget the bookkeeping and mint a new device id, then run the normal
+## first-sync pull, which with an empty local store takes the remote. Exercises
+## the real restore-on-login path. Emits applied() for the wipe and again for
+## the restore.
+## -> pull()'s result + {wiped:PackedStringArray, exact:bool, previous_device_id}
+func simulate_new_device() -> Dictionary:
+	var refused := _debug_refusal({"applied": APPLIED_NONE})
+	if not refused.is_empty():
+		return refused
+	if _timer != null:
+		_timer.stop()
+	await _lock()
+	var before := export_local()
+	_import_local({}, true)
+	var wiped := changed_keys(before, export_local())
+	var previous_device := device_id()
+	_state = {
+		"device_id": Crypto.new().generate_random_bytes(8).hex_encode(),
+		"user_id": _storage.user_id(),
+	}
+	_dirty = false
+	_save_state()
+	var res: Dictionary = await _pull_locked(0)
+	_unlock()
+	return _with(res, {"wiped": wiped, "exact": _import_arity() >= 3, "previous_device_id": previous_device})
+
+
+## DEBUG COROUTINE. Delete the remote blob and forget the bookkeeping (the next
+## sync is a first sync). A blob that is already gone counts as ok.
+## -> {ok, status, json, error, existed:bool}
+func delete_remote() -> Dictionary:
+	var refused := _debug_refusal({"existed": false})
+	if not refused.is_empty():
+		return refused
+	if _timer != null:
+		_timer.stop()
+	await _lock()
+	var res: Dictionary = await _storage.delete_json_blob(blob_key(), access)
+	var existed := bool(res.ok)
+	if not res.ok and int(res.get("status", 0)) == 404:
+		res.ok = true
+		res.error = ""
+	if res.ok:
+		reset_state(_storage.user_id())
+	_unlock()
+	return _with(res, {"existed": existed})
+
+
+## PURE, static. One row per key on either side, sorted by key:
+## {key, status:"same"|"local_only"|"remote_only"|"differs", policy,
+##  local, remote, in_local, in_remote,
+##  merge, in_merge,     # both-changed pull: apply_policies(default_merge(l, r, remote_is_newer), l, r, policies)
+##  take, in_take,       # remote-only-change pull: apply_policies(remote, l, r, policies)
+##  account, in_account} # switch_account: account_wins(l, r, policies)
+## An absent value is null with the matching in_* false. A game that overrides
+## SnapKitService._merge() still sees the DEFAULT merge in the merge column.
+static func diff_rows(local: Dictionary, remote: Dictionary, policies: Dictionary = {},
+		remote_is_newer: bool = true) -> Array[Dictionary]:
+	var merged := apply_policies(default_merge(local, remote, remote_is_newer), local, remote, policies)
+	var taken := apply_policies(remote, local, remote, policies)
+	var account := account_wins(local, remote, policies)
+	var keys := {}
+	for k in local:
+		keys[str(k)] = true
+	for k in remote:
+		keys[str(k)] = true
+	var sorted := keys.keys()
+	sorted.sort()
+	var rows: Array[Dictionary] = []
+	for k: String in sorted:
+		var hl := local.has(k)
+		var hr := remote.has(k)
+		var status := "same"
+		if hl and not hr:
+			status = "local_only"
+		elif hr and not hl:
+			status = "remote_only"
+		elif not _same(local[k], remote[k]):
+			status = "differs"
+		rows.append({
+			"key": k, "status": status, "policy": policy_for(k, policies),
+			"local": _copy(local.get(k)), "remote": _copy(remote.get(k)), "in_local": hl, "in_remote": hr,
+			"merge": _copy(merged.get(k)), "in_merge": merged.has(k),
+			"take": _copy(taken.get(k)), "in_take": taken.has(k),
+			"account": _copy(account.get(k)), "in_account": account.has(k),
+		})
+	return rows
+
+
+## {} when a debug call may proceed, else its refusal (debug gate first, then
+## the "disabled" rule every call shares).
+func _debug_refusal(extra: Dictionary) -> Dictionary:
+	if not debug_tools_enabled:
+		var res := SnapKitTransport.error_result(ERR_DEBUG_DISABLED)
+		res.merge(extra, true)
+		return res
+	if not is_enabled():
+		return _disabled(extra)
+	return {}
+
+
+static func _remote_fields(env: Dictionary, exists: bool) -> Dictionary:
+	var data: Dictionary = env.get("data", {})
+	return {
+		"exists": exists,
+		"version": int(env.get("version", 0)),
+		"updated_at": int(env.get("updated_at", 0)),
+		"device_id": str(env.get("device_id", "")),
+		"data": data,
+		"hash": data_hash(data) if exists else "",
+	}
 
 
 func _load_state() -> void:

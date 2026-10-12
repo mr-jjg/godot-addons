@@ -52,6 +52,11 @@ extends Node
 ##   refresh; otherwise ensure_session() fails and the player must sign in
 ##   again (Wave 4 seam: the spike's "canonical anon handle" blob).
 ##
+## Debug identities (v0.3.0): login_anon_as(handle) makes another anonymous
+## user this device's identity (SnapKitService.debug_login_anon() gates it).
+## Unlike adopt_session() it persists the handle and clears the switched flag,
+## so that identity heals by anon re-login like the original one.
+##
 ## All HTTP goes through SnapKitTransport with opts {"auth": false} (except
 ## associate-logins, which is sent as the current user).
 
@@ -217,6 +222,50 @@ func adopt_session(session: Dictionary) -> bool:
 	return true
 
 
+## True after adopt_session() (a switched provider account): anon re-login is
+## off, so a lost session heals only by refresh or a new provider sign-in.
+func is_switched() -> bool:
+	_ensure_loaded()
+	return _switched
+
+
+## Log in anonymously as `handle` (PUT /v1/auth/login/anon {username,
+## create_user:true}) and make it THIS device's identity: the handle is
+## persisted (so a lost session heals by anon re-login, unlike adopt_session),
+## `_switched` is cleared, and session_changed fires (SnapKitService rebinds the
+## cloud-save bookkeeping). Not gated here; SnapKitService.debug_login_anon()
+## gates it. On failure the current session and handle are untouched.
+## -> {ok, status, json, error, user_id, handle, previous_handle, previous_user_id}
+## COROUTINE.
+func login_anon_as(handle: String) -> Dictionary:
+	_ensure_loaded()
+	var extra := {"user_id": user_id, "handle": handle, "previous_handle": _username,
+		"previous_user_id": user_id}
+	if _offline():
+		return _merged(SnapKitTransport.error_result(SnapKitTransport.ERR_OFFLINE), extra)
+	if handle.strip_edges() == "":
+		return _merged(SnapKitTransport.error_result(SnapKitTransport.ERR_INVALID_ARGUMENT), extra)
+	while _logging_in:
+		await _login_finished
+	# Hold the single-flight flag: a concurrent ensure_session() waits for this
+	# login instead of re-logging in as the old handle.
+	_logging_in = true
+	var res := await _transport.request(HTTPClient.METHOD_PUT, PATH_LOGIN_ANON,
+		{"username": handle, "create_user": true}, {"auth": false})
+	var parsed := parse_login_response(res.json)
+	if res.ok and not parsed.ok:
+		res["ok"] = false
+		res["error"] = parsed.error
+	if res.ok:
+		_username = handle
+		_switched = false
+		_apply_login(parsed)
+		extra["user_id"] = user_id
+	_logging_in = false
+	_login_finished.emit(bool(res.ok) or has_session())
+	return _merged(res, extra)
+
+
 ## PATCH /v1/auth/refresh with the current token (no retry). True on a new
 ## session. Called by ensure_session() on local expiry; safe to call on warm
 ## launch. COROUTINE.
@@ -352,6 +401,11 @@ func _provider_login(provider: String, identity_token: String) -> Dictionary:
 		res["error"] = parsed.error
 	if res.ok:
 		res["session"] = parsed
+	return res
+
+
+static func _merged(res: Dictionary, extra: Dictionary) -> Dictionary:
+	res.merge(extra, true)
 	return res
 
 

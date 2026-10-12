@@ -70,6 +70,16 @@ extends Node
 ## Games track run_start, run_end, screen_view and their own events.
 ##
 ## ---------------------------------------------------------------------------
+## DEBUG & INSPECTION (v0.3.0)
+## ---------------------------------------------------------------------------
+## Read-only, ungated: debug_snapshot(), fetch_stats(), cloud_save_fetch_remote(),
+## debug_identities() (and SnapKitCloudSave.diff_rows(), pure).
+## Mutating, gated by debug_tools_enabled (else {ok:false, error:"debug_disabled"}):
+## cloud_save_force_push / _force_take_remote / _simulate_new_device /
+## _delete_remote, debug_login_anon(), debug_return_to_primary(). Every network
+## call still goes through _gate() first, so offline answers "offline" at once.
+##
+## ---------------------------------------------------------------------------
 ## IDENTITY BRIDGES (D21 / amendment 2)
 ## ---------------------------------------------------------------------------
 ## Platform addons register a bridge per provider:
@@ -148,6 +158,30 @@ const ERR_UNDECLARED := SnapKitErrors.UNDECLARED
 ## anyway. Tests may flip it.
 var strict_declarations: bool = OS.is_debug_build()
 
+## A debug call refused because debug_tools_enabled is false.
+const ERR_DEBUG_DISABLED := "debug_disabled"
+## debug_return_to_primary() before any debug_login_anon() recorded a primary.
+const ERR_NO_PRIMARY := "no_primary"
+## Debug anonymous identities (handles), under SnapKitConfig.data_root.
+const DEBUG_IDENTITIES_FILE := "snapser_kit_debug_identities.json"
+## debug_login_anon() modes.
+const DEBUG_MODE_ACCOUNT := "account"
+const DEBUG_MODE_PULL := "pull"
+const DEBUG_MODE_NONE := "none"
+const WARN_LEFT_PROVIDER := "left a provider account; Sign in with Apple again to return"
+
+## The debug calls (and cloud_save's) work only when true. Default
+## OS.is_debug_build(); a game sets it from its own build policy BEFORE start().
+## The setter propagates to cloud_save.debug_tools_enabled.
+var debug_tools_enabled: bool = OS.is_debug_build():
+	set(value):
+		debug_tools_enabled = value
+		if cloud_save != null:
+			cloud_save.debug_tools_enabled = value
+## Where debug identities persist (written only while the config is online).
+## Resolved when this object is created, like SnapKitAuth.session_path.
+var debug_identities_path: String = SnapKitConfig.data_path(DEBUG_IDENTITIES_FILE)
+
 var _remote_config: Dictionary = {}
 var _display_name: String = ""
 var _started: bool = false
@@ -159,6 +193,8 @@ var _session_started_ms: int = 0
 var _session_open: bool = false
 var _warned_undeclared: Dictionary = {}
 var _pending_offline_reason: String = ""
+## {primary: handle, identities: [{handle, user_id, created_at}]}; null = not loaded.
+var _debug_ids: Variant = null
 
 
 # ---- Lifecycle ---------------------------------------------------------------
@@ -219,6 +255,7 @@ func start_with_config(cfg: SnapKitConfig) -> void:
 	add_child(cloud_save)
 	cloud_save.setup(storage_client, save_store, config)
 	cloud_save.merge_func = _merge
+	cloud_save.debug_tools_enabled = debug_tools_enabled
 	cloud_save.conflict.connect(func(l: Dictionary, r: Dictionary) -> void:
 		cloud_save_conflict.emit(l, r))
 	cloud_save.applied.connect(func(keys: PackedStringArray) -> void:
@@ -393,6 +430,15 @@ func increment_stat(key: String, delta: int = 1) -> Dictionary:
 	return await stats_client.increment_stat(key, delta)
 
 
+## Read every stat this user holds (read-only). -> {ok, error, stats:{key:int}}
+func fetch_stats() -> Dictionary:
+	var gate := _gate()
+	if not gate.is_empty():
+		gate["stats"] = {}
+		return gate
+	return await stats_client.get_stats()
+
+
 # ---- Leaderboards ------------------------------------------------------------
 ## `board` is a logical name mapped via config.leaderboards (unmapped names pass
 ## through). Entries: {user_id, display_name, score, rank, is_me}.
@@ -461,6 +507,50 @@ func cloud_save_pull() -> Dictionary:
 	if not cloud_save.is_enabled():
 		return SnapKitTransport.error_result(SnapKitTransport.ERR_DISABLED)
 	return await cloud_save.pull()
+
+
+## The remote blob as stored (read-only; changes nothing locally).
+## -> {ok, error, exists, cas, version, updated_at, device_id, data, hash}
+func cloud_save_fetch_remote() -> Dictionary:
+	var gate := _cloud_gate(false)
+	if not gate.is_empty():
+		return gate
+	return await cloud_save.fetch_remote()
+
+
+## DEBUG. Remote := exactly the local synced keys (SnapKitCloudSave.force_push).
+func cloud_save_force_push() -> Dictionary:
+	var gate := _cloud_gate(true)
+	if not gate.is_empty():
+		return gate
+	return await cloud_save.force_push()
+
+
+## DEBUG. Local synced keys := exactly the remote blob
+## (SnapKitCloudSave.force_take_remote). cloud_save_applied fires for the changes.
+func cloud_save_force_take_remote() -> Dictionary:
+	var gate := _cloud_gate(true)
+	if not gate.is_empty():
+		return gate
+	return await cloud_save.force_take_remote()
+
+
+## DEBUG. Wipe local synced keys, mint a new device id, then first-sync pull
+## (SnapKitCloudSave.simulate_new_device).
+func cloud_save_simulate_new_device() -> Dictionary:
+	var gate := _cloud_gate(true)
+	if not gate.is_empty():
+		return gate
+	return await cloud_save.simulate_new_device()
+
+
+## DEBUG. Delete this user's cloud-save blob and reset the bookkeeping
+## (SnapKitCloudSave.delete_remote). -> {ok, error, existed}
+func cloud_save_delete_remote() -> Dictionary:
+	var gate := _cloud_gate(true)
+	if not gate.is_empty():
+		return gate
+	return await cloud_save.delete_remote()
 
 
 ## Merge hook for cloud-save conflicts over the `data` maps. Override in the game
@@ -554,6 +644,162 @@ func linked_providers() -> PackedStringArray:
 	return auth.linked_providers() if auth != null else PackedStringArray()
 
 
+# ---- Debug & inspection (v0.3.0) --------------------------------------------
+
+## Not a coroutine, ungated, read-only. {online, booted, offline_reason, user_id,
+## handle (auth.username()), linked, switched, debug_tools, primary_handle,
+## cloud_save: cloud_save.debug_snapshot(with_local) ({} before start)}
+func debug_snapshot(with_local: bool = true) -> Dictionary:
+	return {
+		"online": is_online(),
+		"booted": _booted,
+		"offline_reason": (config.offline_reason if config.is_offline() else "") if config != null else ERR_NOT_STARTED,
+		"user_id": user_id(),
+		"handle": auth.username() if auth != null else "",
+		"linked": linked_providers(),
+		"switched": auth.is_switched() if auth != null else false,
+		"debug_tools": debug_tools_enabled,
+		"primary_handle": _primary_handle(),
+		"cloud_save": cloud_save.debug_snapshot(with_local) if cloud_save != null else {},
+	}
+
+
+## DEBUG COROUTINE. Become the anonymous user `handle` ("" mints a fresh one with
+## the config's handle prefix), standing in for "sign in to another account on
+## this device". The first call records the current handle as PRIMARY, written
+## before switching. mode:
+##   "account" (default): the real switch rule (D36), cloud_save.adopt_account()
+##   "pull":   a normal first sync (a fresh login with local progress): pull()
+##   "none":   swap the session only
+## Refreshes the profile like switch_account(). From a switched provider session
+## (auth.is_switched()) it proceeds but adds warning (WARN_LEFT_PROVIDER): only a
+## new provider sign-in returns to that account.
+## -> {ok, error, user_id, handle, previous_user_id, cloud_save?, warning?}
+func debug_login_anon(handle: String = "", mode: String = DEBUG_MODE_ACCOUNT) -> Dictionary:
+	var gate := _gate()
+	if not gate.is_empty():
+		return gate
+	if not debug_tools_enabled:
+		return SnapKitTransport.error_result(ERR_DEBUG_DISABLED)
+	if not mode in [DEBUG_MODE_ACCOUNT, DEBUG_MODE_PULL, DEBUG_MODE_NONE]:
+		return SnapKitTransport.error_result(SnapKitTransport.ERR_INVALID_ARGUMENT)
+	var warning := WARN_LEFT_PROVIDER if auth.is_switched() else ""
+	var previous_uid := auth.user_id
+	var ids := _identities()
+	var current := auth.username()
+	if str(ids.primary) == "" and current != "":
+		ids.primary = current
+		_upsert_identity(ids, current, "" if auth.is_switched() else previous_uid)
+		_save_identities()
+	var target := handle if handle != "" else SnapKitAuth.generate_handle(config.handle_prefix())
+	var login: Dictionary = await auth.login_anon_as(target)
+	if not login.ok:
+		if warning != "":
+			login["warning"] = warning
+		return login
+	_upsert_identity(ids, target, auth.user_id)
+	_save_identities()
+	_display_name = ""
+	var res := SnapKitTransport.ok_result()
+	res["user_id"] = auth.user_id
+	res["handle"] = target
+	res["previous_user_id"] = previous_uid
+	await refresh_profile()
+	if mode != DEBUG_MODE_NONE and cloud_save.is_enabled() and (not strict_declarations
+			or config.is_declared("blobs", config.cloud_save_blob_key())):
+		if mode == DEBUG_MODE_ACCOUNT:
+			res["cloud_save"] = await cloud_save.adopt_account()
+		else:
+			res["cloud_save"] = await cloud_save.pull()
+	if warning != "":
+		res["warning"] = warning
+	return res
+
+
+## DEBUG COROUTINE. debug_login_anon(primary handle, mode). No primary recorded
+## yet -> {ok:false, error:"no_primary"}.
+func debug_return_to_primary(mode: String = DEBUG_MODE_ACCOUNT) -> Dictionary:
+	var gate := _gate()
+	if not gate.is_empty():
+		return gate
+	if not debug_tools_enabled:
+		return SnapKitTransport.error_result(ERR_DEBUG_DISABLED)
+	var primary := _primary_handle()
+	if primary == "":
+		return SnapKitTransport.error_result(ERR_NO_PRIMARY)
+	return await debug_login_anon(primary, mode)
+
+
+## Not a coroutine, read-only. The recorded identities, primary first:
+## [{handle, user_id, primary:bool, current:bool, created_at:int}]. current is
+## the anonymous handle this device logs in as (false for all while a provider
+## account is adopted).
+func debug_identities() -> Array[Dictionary]:
+	var ids := _identities()
+	var current := auth.username() if auth != null and not auth.is_switched() else ""
+	var out: Array[Dictionary] = []
+	for e: Dictionary in ids.identities:
+		var row := {
+			"handle": str(e.get("handle", "")),
+			"user_id": str(e.get("user_id", "")),
+			"primary": str(e.get("handle", "")) == str(ids.primary),
+			"current": current != "" and str(e.get("handle", "")) == current,
+			"created_at": int(e.get("created_at", 0)),
+		}
+		if row.primary:
+			out.push_front(row)
+		else:
+			out.append(row)
+	return out
+
+
+func _primary_handle() -> String:
+	return str(_identities().primary)
+
+
+## The identities record, loaded once from debug_identities_path.
+func _identities() -> Dictionary:
+	if _debug_ids is Dictionary:
+		return _debug_ids
+	var ids := {"primary": "", "identities": []}
+	if FileAccess.file_exists(debug_identities_path):
+		var parsed: Variant = SnapKitJson.parse(FileAccess.get_file_as_string(debug_identities_path))
+		if parsed is Dictionary:
+			ids.primary = SnapKitJson.get_str(parsed, "primary")
+			for e in SnapKitJson.get_array(parsed, "identities"):
+				if e is Dictionary and SnapKitJson.get_str(e, "handle") != "":
+					ids.identities.append({"handle": SnapKitJson.get_str(e, "handle"),
+						"user_id": SnapKitJson.get_str(e, "user_id"),
+						"created_at": SnapKitJson.get_int(e, "created_at")})
+	_debug_ids = ids
+	return ids
+
+
+## Add `handle` or fill in its user id (an empty uid never overwrites one).
+static func _upsert_identity(ids: Dictionary, handle: String, uid: String) -> void:
+	for e: Dictionary in ids.identities:
+		if str(e.handle) == handle:
+			if uid != "":
+				e.user_id = uid
+			return
+	ids.identities.append({"handle": handle, "user_id": uid,
+		"created_at": int(Time.get_unix_time_from_system())})
+
+
+## Same rule as the cloud-save state file: written only while the config is
+## online (offline and test runs keep it in memory).
+func _save_identities() -> void:
+	if config == null or config.is_offline() or not (_debug_ids is Dictionary):
+		return
+	SnapKitConfig.ensure_dir_for(debug_identities_path)
+	var f := FileAccess.open(debug_identities_path, FileAccess.WRITE)
+	if f == null:
+		push_warning("[SnapKit] cannot write debug identities file %s" % debug_identities_path)
+		return
+	f.store_string(JSON.stringify(_debug_ids, "  "))
+	f.close()
+
+
 # ---- Profile / display name (D16) -------------------------------------------
 
 ## The Profiles display name, or the auto-generated default
@@ -639,6 +885,19 @@ func _gate(needs_quests: bool = false, kind: String = "", item: String = "") -> 
 		return SnapKitTransport.error_result(SnapKitTransport.ERR_OFFLINE)
 	if needs_quests and quests_client == null:
 		return SnapKitTransport.error_result(SnapKitTransport.ERR_DISABLED)
+	return {}
+
+
+## _gate() for the cloud-save blob, then cloud save enabled, then (debug) the
+## debug_tools_enabled gate. {} when the call may proceed.
+func _cloud_gate(debug: bool) -> Dictionary:
+	var gate := _gate(false, "blobs", config.cloud_save_blob_key() if config != null else "")
+	if not gate.is_empty():
+		return gate
+	if not cloud_save.is_enabled():
+		return SnapKitTransport.error_result(SnapKitTransport.ERR_DISABLED)
+	if debug and not debug_tools_enabled:
+		return SnapKitTransport.error_result(ERR_DEBUG_DISABLED)
 	return {}
 
 
