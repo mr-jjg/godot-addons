@@ -5,7 +5,7 @@ Game-agnostic achievements for Godot 4.x. It provides:
 - `AchKitSchema`, a schema and validator shared by the runtime, the editor dock and a game's checks;
 - `AchKitCodegen`, which reads and writes the game's definitions file (plain, generated GDScript);
 - `AchKitSnapserBridge`, an optional duck-typed adapter that mirrors earned achievements onto a Snapser service;
-- an Editor Tool Kit dock where designers author achievements (0.2.0; in 0.1.0 the plugin mounts nothing).
+- an Editor Tool Kit dock ("Achievements" bottom panel) where designers author achievements.
 
 The runtime (`runtime/`) and codegen (`codegen/`) have **no dependencies**: not on `snapser_kit`, not on
 `editor_tool_kit`, not on any save addon. They load headless and in exported games. Only `plugin.gd`
@@ -51,7 +51,7 @@ actions, and a game lays them out with its own widgets.
    }
    ```
 3. Write the **kinds file** by hand (below).
-4. Create the **definitions file**: in the dock (0.2.0), or once from a throwaway headless script
+4. Create the **definitions file**: in the dock (its first Save creates it), or once from a throwaway headless script
    through `AchKitCodegen.serialize(...)`, so it is canonical from the first commit.
 5. Add the tracker autoload (below) and report from wherever each kind happens.
 
@@ -245,6 +245,79 @@ func _ready() -> void:
   record.
 - Keep a reference to the bridge (it's `RefCounted`; its connections die with it).
 
+## Editor dock
+
+The plugin mounts an **Achievements** bottom panel (Editor Tool Kit; `editor_tool_kit` must be
+vendored and enabled). It reads `res://achievements_kit.config.json`; without it, the panel shows
+setup instructions instead of the editor.
+
+| Config key | Meaning |
+|---|---|
+| `definitions` | the generated definitions file. It may not exist yet: the first Save creates it (and its folders). |
+| `kinds` | the game's hand-written kinds file (`const KINDS`). It must exist and compile. |
+| `earned_key_prefix`, `progress_key_prefix` | the save-key prefixes, written into the file's header and shown in the preview. They must match what the tracker subclass passes to `configure()` (`is_canonical` compares the header too). |
+| `icon_dir` | where the icon Browse dialog starts (`""` = `res://`). |
+
+Paths are `res://` (or absolute); a bare relative path is taken relative to `res://`.
+
+**Layout.** On the left: a filter (matches id, name or kind), the list (`#`, `id`, `name`, `kind`,
+`target`, `flags`: `H` hidden, `!` has problems, red for errors and amber for warnings only, with
+the problems as its tooltip), and Add, Duplicate, Delete (confirmed), ↑ ↓. On the right, a form
+for the selected achievement:
+
+- *Identity*: `id` (renames on Enter or when the field loses focus), `name`, `description`;
+- *Trigger*: `kind` (every declared kind as `label (mode)`, its `doc` below; an undeclared kind
+  shows as `<unknown: x>` and is a problem), `target`, then one control per param the kind
+  declares (enum: dropdown, `(any)` for `""`; string: text; int: spin box; bool: check box);
+- *Display*: `hidden`, `hint` (editable when hidden), `icon` (path + Browse), `category` (the
+  categories in use, `(none)`, or `new…` and type it);
+- *Preview*: the row as the game shows it locked (`???` and the hint when hidden) and earned,
+  and the two save keys.
+
+Below: the Problems list (click one to select its achievement), counts (`N achievements · H
+hidden · per kind`, plus `● unsaved changes`), Save, Revert, Reveal file, and a collapsed
+*Renames & retired* section listing `RENAMED` and `RETIRED` (read-only). A banner shows when the
+file is hand-edited ("saving will normalize it"), was written by a newer schema, failed to load,
+doesn't exist yet, or changed on disk while you had unsaved edits.
+
+**Rules it enforces.**
+
+- Edits apply to an in-memory model; nothing touches disk until Save. There's no editor UndoRedo:
+  Revert reloads from disk (it asks first when there are unsaved edits).
+- Save validates with `AchKitSchema` (the definitions and the kinds file). Errors block it,
+  warnings never do. It writes exactly `AchKitCodegen.serialize(...)`, then reloads.
+- Save is refused when the file changed on disk since it was loaded (someone else's edit, a git
+  checkout): Revert first. When the editor regains focus and the file changed, the dock reloads
+  by itself if you have no unsaved edits.
+- Save is disabled while the definitions or kinds file can't be loaded, so a broken or
+  newer-schema file is never overwritten with an empty model.
+- **Ids are save keys.** An id in the file on disk counts as shipped. Renaming a shipped id adds
+  `old -> new` to `RENAMED` (and repoints older entries); deleting one adds it to `RETIRED`
+  (with any `RENAMED` keys that pointed at it). An id added since the last load is renamed or
+  dropped freely. Renaming back to a former id collapses the chain. New ids can't reuse a
+  retired id or a `RENAMED` key. After a Save, the saved ids count as shipped.
+
+All logic is in `editor/achievements_editor_service.gd`, a headless `ToolService` (no Control or
+EditorInterface references); `editor/dock.gd` only lays out controls and re-renders on the
+service's `changed` signal. The service API (each mutator returns `{ok: true, ...}` or
+`{ok: false, error}` and emits `changed` on success):
+
+```gdscript
+const CONFIG_PATH := "res://achievements_kit.config.json"
+var config_path := CONFIG_PATH          # tests point it elsewhere
+var config: Dictionary; var kinds: Dictionary
+var model: Dictionary                   # {achievements, renamed, retired}
+func load_config() -> Dictionary; func is_configured() -> bool
+func reload() -> Dictionary; func revert() -> Dictionary; func save() -> Dictionary
+func add(id, kind); func duplicate_entry(id, new_id); func set_field(id, field, value)
+func set_param(id, param, value); func rename(old_id, new_id); func remove(id); func move(id, delta)
+func problems() -> PackedStringArray; func errors(); func problems_for(id); func problem_id(problem)
+func ids(); func get_def(id); func filter_ids(text); func categories(); func preview_row(id)
+func stats(); func kind_names(); func kind_caption(kind); func kind_params(kind)
+func serialized_text(); func disk_changed(); func is_shipped(id); func load_error()
+func file_exists(); func is_canonical_on_disk(); func schema_newer(); func prefixes()
+```
+
 ## Tests
 
 Headless; never touch the network or `user://`:
@@ -257,12 +330,23 @@ Headless; never touch the network or `user://`:
 ```
 
 The suite lives at the repo root in `tests/achievements_kit/` (not inside the addon):
-`test_schema.gd`, `test_codegen.gd`, `test_tracker.gd`, `test_bridge.gd`, with fakes in `fakes/`
-(a staged/flushed store, a fake Snapser service, a probe tracker) and fixtures in `fixtures/` (a
-kinds file and a canonical definitions file). `test_codegen.gd::test_parse_errors` compiles broken
-GDScript on purpose, so two `SCRIPT ERROR: Parse Error` lines in the output are expected.
+`test_schema.gd`, `test_codegen.gd`, `test_tracker.gd`, `test_bridge.gd` and
+`test_editor_service.gd` (the dock's service against temp files under `OS.get_cache_dir()`, plus
+a headless build of the dock), with fakes in `fakes/` (a staged/flushed store, a fake Snapser
+service, a probe tracker) and fixtures in `fixtures/` (a kinds file and a canonical definitions
+file). `test_codegen.gd::test_parse_errors` compiles broken GDScript on purpose, so two
+`SCRIPT ERROR: Parse Error` lines in the output are expected.
+
+To check the dock loads in a real editor (no output means no errors):
+
+```bash
+/Applications/Godot.app/Contents/MacOS/Godot --headless --editor --path . --quit 2>&1 \
+    | grep -iE "error|failed" | grep -i achievements_kit
+```
 
 ## Versions
 
 - **0.1.0**: runtime tracker, schema and validator, generated-GDScript codegen, Snapser bridge.
   The plugin mounts nothing yet.
+- **0.2.0**: the Achievements editor dock (`editor/`): list, form, problems, preview, Save with
+  on-disk change detection, RENAMED / RETIRED kept on rename and delete.
