@@ -1,0 +1,7 @@
+{
+  "definitions": "res://scripts/config/achievements.gd",
+  "kinds": "res://scripts/config/achievement_kinds.gd",
+  "earned_key_prefix": "prog_ach_",
+  "progress_key_prefix": "prog_achp_",
+  "icon_dir": ""
+}

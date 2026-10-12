@@ -19,8 +19,11 @@ wiki/                 EMITTED docs (Hotseat workspace -> markdown). Never hand-e
 
 Currently: `ui_kit` (UI shell infra), `editor_tool_kit` (editor-tool base classes),
 `remote_config_editor` (manifest-driven remote-config aggregation/publish),
-`build_kit` (device builds), and `snapser_kit` (Snapser client + `SnapKitService`;
-tests in `tests/snapser_kit/`, provisioning/smoke tooling in `tools/snapser/`).
+`build_kit` (device builds), `snapser_kit` (Snapser client + `SnapKitService`;
+tests in `tests/snapser_kit/`, provisioning/smoke tooling in `tools/snapser/`),
+`snapser_kit_apple` (Sign in with Apple for snapser_kit), and `achievements_kit`
+(achievements tracker, schema, generated-GDScript codegen, duck-typed Snapser bridge;
+tests in `tests/achievements_kit/`).
 
 > **THIS REPO IS PUBLIC.** Never commit Snapser snapend IDs, application IDs,
 > gateway URLs, API keys, `.env`, `secrets.cfg` or `*.p8` files — not in code,
@@ -35,6 +38,14 @@ snapser_kit tests (headless, never touch the network):
 ```bash
 SNAPSER_OFFLINE=1 /Applications/Godot.app/Contents/MacOS/Godot --headless --path . \
     --script res://tests/snapser_kit/run_tests.gd
+```
+
+achievements_kit tests (headless, no network, nothing under `user://`; two
+`Parse Error` lines from a deliberate negative test are expected):
+
+```bash
+/Applications/Godot.app/Contents/MacOS/Godot --headless --path . \
+    --script res://tests/achievements_kit/run_tests.gd
 ```
 
 ## The vendoring + self-update model
