@@ -3,7 +3,7 @@
 **Status:** accepted
 
 ## Metadata
-- **Number:** ADR-10
+- **Number:** ADR-11
 - **Date:** 2026-06-18
 - **Scope:** ui_kit
 

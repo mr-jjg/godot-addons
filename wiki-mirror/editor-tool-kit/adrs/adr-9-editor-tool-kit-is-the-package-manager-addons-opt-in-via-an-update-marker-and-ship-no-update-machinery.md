@@ -3,7 +3,7 @@
 **Status:** accepted
 
 ## Metadata
-- **Number:** ADR-13
+- **Number:** ADR-9
 - **Date:** 2026-06-19
 - **Scope:** editor_tool_kit
 - **Deciders:** Benjamin Jordan
