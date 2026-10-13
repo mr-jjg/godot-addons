@@ -144,9 +144,11 @@ and push to `main` yourself — don't leave it uncommitted or ask first.
 
 ## Docs (`wiki-mirror/`) are emitted, never hand-edited
 
-`wiki-mirror/**` is a read-only projection of the `godot-addons` Hotseat workspace
-(`hotseat.config.json` holds the `workspaceId`; the `wiki` MCP at
-`hotseat.thegoldenmule.com/mcp` is the authoring surface). Edit docs through the
-Hotseat tooling (`hotseat wiki …` / the wiki MCP), then re-run the `wiki-mirror`
-emitter — never by editing the markdown directly (it gets overwritten). Each addon
-gets its own TOC under the workspace.
+The addon docs live in the shared **Sovereign Axe** workspace (`ws:mv72wvay-00gz-t90t1h`)
+under **Core Tech** (`toc:mv72wync-00h1-19nh5n`); author them with the `wiki` MCP at
+`hotseat.thegoldenmule.com/mcp`. Create pages only under Core Tech or its children (`parentId`),
+never at the workspace root or under a game page. Each addon is its own TOC under Core Tech.
+`hotseat.config.json` pins this (`workspaceId` + `rootPageId`), and the hotseat skills read it.
+Game pages and **Studio** (`toc:mv770s8o-004h-12oesi`, studio-wide conventions) are readable
+and linkable. `wiki-mirror/**` is a read-only projection of Core Tech that the local mirror
+service keeps current; never edit the markdown directly (it gets overwritten).
