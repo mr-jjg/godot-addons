@@ -14,7 +14,7 @@ addons/<name>/        one addon per folder, AT THE REPO ROOT (load-bearing — s
   plugin.gd           the EditorPlugin
   <addon files>.gd    + their .gd.uid (commit the .uid files; they travel with the addon)
 project.godot         minimal; [editor_plugins] enables every addon here
-wiki/                 EMITTED docs (Hotseat workspace -> markdown). Never hand-edit; see below.
+wiki-mirror/                 EMITTED docs (Hotseat workspace -> markdown). Never hand-edit; see below.
 ```
 
 Currently: `ui_kit` (UI shell infra), `editor_tool_kit` (editor-tool base classes),
@@ -108,7 +108,7 @@ to keep in sync anymore.
 4. No per-addon `.gitignore` entry needed — etk stages every addon's update under
    its single `editor_tool_kit_update/` dir.
 5. Add a row to the README Addons table, and author its docs in the wiki workspace
-   (do NOT hand-write `wiki/**` — see below).
+   (do NOT hand-write `wiki-mirror/**` — see below).
 
 The static, editor-free helpers (version compare, discovery + URL building, the
 runner's archive-path map + traversal guard) are covered by
@@ -142,9 +142,9 @@ Bump `version` in the addon's `plugin.cfg`, commit, push to `main`. Done.
 change is finished and verified (verifier passes, secret grep clean), commit it
 and push to `main` yourself — don't leave it uncommitted or ask first.
 
-## Docs (`wiki/`) are emitted, never hand-edited
+## Docs (`wiki-mirror/`) are emitted, never hand-edited
 
-`wiki/**` is a read-only projection of the `godot-addons` Hotseat workspace
+`wiki-mirror/**` is a read-only projection of the `godot-addons` Hotseat workspace
 (`hotseat.config.json` holds the `workspaceId`; the `wiki` MCP at
 `hotseat.thegoldenmule.com/mcp` is the authoring surface). Edit docs through the
 Hotseat tooling (`hotseat wiki …` / the wiki MCP), then re-run the `wiki-mirror`
