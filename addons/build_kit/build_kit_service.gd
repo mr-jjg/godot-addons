@@ -758,10 +758,9 @@ func start_build(upload := true, build_number := 0) -> Dictionary:
 	return ok({"stages": _stages.size() + 1, "build_number": build_number})
 
 
-## Export a debug APK and adb install it. sdk_path/serial come from the dock
-## (EditorSettings and the device picker aren't reachable from here); device
-## state is re-checked fresh rather than trusted.
-func start_build_android(sdk_path: String, serial := "") -> Dictionary:
+## Busy check + load/validate the Android preset, shared by both build paths.
+## Returns {} when clear (_preset loaded), else an err dict to return as-is.
+func _android_build_preflight() -> Dictionary:
 	if is_busy():
 		return err("A build is already running (stage: %s)." % _stage)
 	load_config()
@@ -770,6 +769,16 @@ func start_build_android(sdk_path: String, serial := "") -> Dictionary:
 		return err("No Android export preset found. Create one in Project → Export (platform Android), then Refresh preflight.")
 	if not is_apk_export_path(str(_preset["export_path"])):
 		return err("The Android export preset needs an export path ending in .apk. Press Fix on the preflight 'Android export preset' row.")
+	return {}
+
+
+## Export a debug APK and adb install it. sdk_path/serial come from the dock
+## (EditorSettings and the device picker aren't reachable from here); device
+## state is re-checked fresh rather than trusted.
+func start_build_android(sdk_path: String, serial := "") -> Dictionary:
+	var guard := _android_build_preflight()
+	if not guard.is_empty():
+		return guard
 
 	var adb := resolve_adb_path(sdk_path)
 	var devices := parse_adb_devices(str(Exec.run(PackedStringArray([adb, "devices", "-l"]))["output"]))
@@ -811,14 +820,9 @@ func start_build_android(sdk_path: String, serial := "") -> Dictionary:
 ## export, so we set those on our own process and let the spawned export inherit
 ## them (the password never reaches a shell line or the log).
 func start_build_android_release() -> Dictionary:
-	if is_busy():
-		return err("A build is already running (stage: %s)." % _stage)
-	load_config()
-	_preset = load_preset("Android")
-	if _preset.is_empty():
-		return err("No Android export preset found. Create one in Project → Export (platform Android), then Refresh preflight.")
-	if not is_apk_export_path(str(_preset["export_path"])):
-		return err("The Android export preset needs an export path ending in .apk. Press Fix on the preflight 'Android export preset' row.")
+	var guard := _android_build_preflight()
+	if not guard.is_empty():
+		return guard
 	var ks := android_release_keystore()
 	if str(ks["path"]) == "" or str(ks["user"]) == "" or str(ks["password"]) == "":
 		return err("No release keystore configured. See the Release keystore preflight row — press Fix to generate one.")
