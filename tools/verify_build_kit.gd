@@ -1382,7 +1382,7 @@ func _verify_release_cli() -> void:
 		_check("Exec.run passes $(…) through literally", int(run["code"]) == 0 and str(run["output"]) == nasty, str(run))
 
 	# config write
-	var two_space := "{\n  \"ios\": {\n    \"preset\": \"iOS\",\n    \"build_number\": 7\n  },\n  \"android\": {\"version_code\": 3}\n}\n"
+	var two_space := "{\n  \"ios\": {\n    \"preset\": \"iOS\",\n    \"build_number\": 7\n  },\n  \"android\": {\"preset\": \"Android\"}\n}\n"
 	var w := Release.set_build_number_text(two_space, 8)
 	_check("config: in-place edit keeps formatting", w == two_space.replace("\"build_number\": 7", "\"build_number\": 8"), w)
 	w = Release.set_build_number_text("{\"ios\": {\"build_number\": 4.0}}", 5)
