@@ -328,6 +328,25 @@ func _initialize() -> void:
 		FileAccess.open(existing_ks, FileAccess.READ).get_as_text() == "not empty")
 	rk_fix_svc.free()
 
+	# release keystore ingestion (adopt): guard branches only; the happy path
+	# would shell out to keytool.
+	var adopt_svc: Node = ServiceT.new()
+	_check("adopt needs a jdk",
+		str(adopt_svc.adopt_release_keystore("/any.keystore", "upload", "pw", "").get("error", "")).contains("Java SDK"))
+	_check("adopt rejects a missing file",
+		str(adopt_svc.adopt_release_keystore("/no/such.keystore", "upload", "pw", "/any/jdk").get("error", "")).contains("File not found"))
+	var adopt_ks := OS.get_cache_dir().path_join("build_kit_verify").path_join("adopt.keystore")
+	DirAccess.make_dir_recursive_absolute(adopt_ks.get_base_dir())
+	var akf := FileAccess.open(adopt_ks, FileAccess.WRITE)
+	if akf != null:
+		akf.store_string("ks")
+		akf.close()
+	_check("adopt requires an alias",
+		str(adopt_svc.adopt_release_keystore(adopt_ks, "  ", "pw", "/any/jdk").get("error", "")).contains("alias"))
+	_check("adopt requires a password",
+		str(adopt_svc.adopt_release_keystore(adopt_ks, "upload", "", "/any/jdk").get("error", "")).contains("password"))
+	adopt_svc.free()
+
 	# Read-only (unlike Fix), so safe to exercise against the real repo's export_presets.cfg.
 	var svc5: Node = ServiceT.new()
 	var real_android_preset: Dictionary = svc5.load_preset("Android")
@@ -510,6 +529,11 @@ func _initialize() -> void:
 	var cert := ServiceT.keytool_exportcert_args("keytool", "/ks.keystore", "upload", "SECRET", "/out.pem")
 	_check("exportcert rfc to pem",
 		cert.has("-exportcert") and cert.has("-rfc") and cert[cert.find("-file") + 1] == "/out.pem", str(cert))
+	var listargs := ServiceT.keytool_list_args("keytool", "/ks.keystore", "upload", "SECRET")
+	_check("keytool_list_args targets the alias with the password",
+		listargs.has("-list") and listargs[listargs.find("-keystore") + 1] == "/ks.keystore"
+		and listargs[listargs.find("-alias") + 1] == "upload"
+		and listargs[listargs.find("-storepass") + 1] == "SECRET", str(listargs))
 
 	# android sdk/jdk: only the deterministic branch (a path that exists) is
 	# pinned exactly; fixable branches assert fix_value self-consistently

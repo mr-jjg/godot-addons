@@ -2868,6 +2868,16 @@ static func keytool_exportcert_args(keytool: String, keystore_path: String, alia
 	])
 
 
+## keytool -list on one alias: non-zero exit = wrong password or missing alias.
+static func keytool_list_args(keytool: String, keystore_path: String, alias: String, password: String) -> PackedStringArray:
+	return PackedStringArray([
+		keytool, "-list",
+		"-keystore", keystore_path,
+		"-alias", alias,
+		"-storepass", password,
+	])
+
+
 ## The android.release_keystore Fix: mint a keystore + save its creds to .env.
 ## Synchronous — keytool is a bounded local call (the dock warns before the brief
 ## freeze); refuses an existing file so a real signing key is never clobbered.
@@ -2903,6 +2913,39 @@ func _fix_release_keystore(jdk_path: String, keystore_path := "") -> Dictionary:
 	else:
 		msg += " (Upload-certificate export failed — only needed for Play registration; re-run then.)"
 	return ok({"message": msg})
+
+
+## Adopt a user-supplied release keystore: validate the alias+password with
+## keytool, copy it out of the repo (binary — verbatim, never a text copy), and
+## record the creds to .env. Synchronous — keytool -list is a bounded local call.
+func adopt_release_keystore(keystore_path: String, alias: String, password: String, jdk_path: String) -> Dictionary:
+	if jdk_path == "":
+		return err("Configure the Java SDK path first — see the Java SDK preflight row.")
+	if not FileAccess.file_exists(keystore_path):
+		return err("File not found: " + keystore_path)
+	alias = alias.strip_edges()
+	if alias == "":
+		return err("Enter the key alias (the name the key was created under).")
+	if password == "":
+		return err("Enter the keystore password.")
+	var keytool := resolve_keytool_path(jdk_path)
+	var check := Exec.run(keytool_list_args(keytool, keystore_path, alias, password))
+	if int(check["code"]) != 0:
+		return err("keytool couldn't open the keystore — check the password and that alias '%s' exists: %s" % [alias, str(check["output"]).strip_edges().left(300)])
+	var dest := release_keystore_dir().path_join(keystore_path.get_file())
+	if dest != keystore_path:
+		DirAccess.make_dir_recursive_absolute(release_keystore_dir())
+		if DirAccess.copy_absolute(keystore_path, dest) != OK:
+			return err("Cannot copy the keystore to " + dest)
+	var env_file := write_env_vars({
+		"GODOT_ANDROID_KEYSTORE_RELEASE_PATH": dest,
+		"GODOT_ANDROID_KEYSTORE_RELEASE_USER": alias,
+		"GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD": password,
+	})
+	if env_file == "":
+		return err("Keystore copied to %s, but %s could not be written." % [dest, env_write_path()])
+	refresh_preflight()
+	return ok({"message": "Release keystore '%s' added from %s; credentials saved to %s." % [alias, keystore_path.get_file(), env_file]})
 
 
 # ── Fixes ─────────────────────────────────────────────────────────────────────

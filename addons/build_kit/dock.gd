@@ -40,6 +40,11 @@ var _itch_target_text := ""       # survives preflight-row rebuilds, like _issue
 var _butler_key_text := ""        # ditto; cleared the moment it's saved, never logged
 var _itch_version_text := ""      # ditto, for the project-version form
 var _p8_dialog: EditorFileDialog
+var _ks_dialog: EditorFileDialog  # release-keystore browse dialog
+var _ks_path := ""       # staged keystore path (survives rebuilds), submitted by Add
+var _ks_alias := ""      # ditto
+var _ks_pass := ""       # ditto; never logged
+var _ks_path_label: Label  # live "Selected: <path>", updated on browse/drop
 var _issuer_text := ""   # survives preflight-row rebuilds (rows re-render on refresh)
 var _bundle_text := ""   # ditto, for the create-preset form
 var _teams: Array = []   # [{id, name}] from the service, refreshed with the rows
@@ -105,11 +110,8 @@ func _build_android_tab() -> Control:
 	btn_aab.disabled = true  # TODO: analog of iOS's _btn_testflight
 	_btn_apk = Ui.button("▶ Build release APK", _on_build_android_release,
 		"Export a release-signed APK to disk (no install)")
-	var btn_keystore := Ui.button("Add release keystore…", Callable(),
-		"Release-keystore ingestion — not built yet")
-	btn_keystore.disabled = true  # TODO: analog of iOS's _make_asc_key_form
 	var build_col := VBoxContainer.new()
-	build_col.add_child(Ui.button_bar([_btn_install, _btn_cancel_android, btn_aab, _btn_apk, btn_keystore]))
+	build_col.add_child(Ui.button_bar([_btn_install, _btn_cancel_android, btn_aab, _btn_apk]))
 	return _make_platform_tab("android", "Android", "Build Android", build_col)
 
 
@@ -506,6 +508,8 @@ func _make_row(row: Dictionary, platform: String) -> Control:
 			box.add_child(bar)
 		if str(row["id"]) == "ios.asc_key":
 			box.add_child(_make_asc_key_form())
+		if str(row["id"]) == "android.release_keystore":
+			box.add_child(_make_release_keystore_form())
 		if str(row["id"]) == "ios.preset":
 			if str(row["status"]) == "fail":
 				box.add_child(_make_preset_form())
@@ -650,6 +654,84 @@ func _on_files_dropped(files: PackedStringArray) -> void:
 		if file.ends_with(".p8"):
 			_show_result(service.adopt_asc_key(file))
 			return
+		if file.ends_with(".keystore") or file.ends_with(".jks"):
+			_on_keystore_selected(file)
+			_set_status("android", "Keystore staged — enter the alias and password below, then Add.", Pal.TEXT, STATUS_TOAST_SECONDS)
+			return
+
+
+## Release-keystore adoption form: browse or drop a .keystore/.jks, enter its
+## alias + password, Add. Rendered under the android.release_keystore row while
+## it's unconfigured.
+func _make_release_keystore_form() -> Control:
+	var col := VBoxContainer.new()
+	var row1 := HBoxContainer.new()
+	row1.add_theme_constant_override("separation", Pal.SEP)
+	row1.add_child(Ui.button("Browse for keystore…", _on_browse_keystore,
+		"Pick an existing .keystore / .jks — it's copied out of the project and its path saved to .env"))
+	var hint := Label.new()
+	hint.text = "…or drop a .keystore / .jks anywhere on this panel"
+	hint.add_theme_color_override("font_color", Pal.TEXT_DIM)
+	row1.add_child(hint)
+	col.add_child(row1)
+
+	_ks_path_label = Label.new()
+	_ks_path_label.text = ("Selected: " + _ks_path) if _ks_path != "" else "No keystore selected"
+	_ks_path_label.add_theme_color_override("font_color", Pal.CAPTION)
+	col.add_child(_ks_path_label)
+
+	var alias := LineEdit.new()
+	alias.placeholder_text = "Key alias (the name the key was created under)"
+	alias.text = _ks_alias
+	alias.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	alias.text_changed.connect(_on_ks_alias_changed)
+	col.add_child(alias)
+
+	var row3 := HBoxContainer.new()
+	row3.add_theme_constant_override("separation", Pal.SEP)
+	var pw := LineEdit.new()
+	pw.placeholder_text = "Keystore password"
+	pw.secret = true
+	pw.text = _ks_pass
+	pw.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pw.text_changed.connect(_on_ks_pass_changed)
+	row3.add_child(pw)
+	row3.add_child(Ui.button("Add keystore", _on_add_keystore))
+	col.add_child(row3)
+	return col
+
+
+func _on_ks_alias_changed(text: String) -> void:
+	_ks_alias = text
+
+
+func _on_ks_pass_changed(text: String) -> void:
+	_ks_pass = text
+
+
+func _on_browse_keystore() -> void:
+	if _ks_dialog == null:
+		_ks_dialog = EditorFileDialog.new()
+		_ks_dialog.file_mode = EditorFileDialog.FILE_MODE_OPEN_FILE
+		_ks_dialog.access = EditorFileDialog.ACCESS_FILESYSTEM
+		_ks_dialog.add_filter("*.keystore,*.jks", "Android release keystore")
+		_ks_dialog.file_selected.connect(_on_keystore_selected)
+		add_child(_ks_dialog)
+	_ks_dialog.popup_centered_ratio(0.5)
+
+
+func _on_keystore_selected(path: String) -> void:
+	_ks_path = path
+	if is_instance_valid(_ks_path_label):
+		_ks_path_label.text = "Selected: " + path
+
+
+func _on_add_keystore() -> void:
+	if _ks_path == "":
+		_set_status("android", "Browse for or drop a keystore first.", Pal.ERROR, STATUS_TOAST_SECONDS)
+		return
+	var jdk_path := _editor_setting(EditorInterface.get_editor_settings(), ANDROID_JDK_KEY)
+	_show_result(service.adopt_release_keystore(_ks_path, _ks_alias, _ks_pass, jdk_path), "android")
 
 
 ## itch.target form: the game's page URL (or `user/game`) → set_itch_target.
