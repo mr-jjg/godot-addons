@@ -145,6 +145,24 @@ func _initialize() -> void:
 	_check("bump defaults unset to 1 then +1", ServiceT._bump_preset_version_code("preset.0", vc_path2) == 2)
 	_check("bump missing file returns -1", ServiceT._bump_preset_version_code("preset.0", "user://nope_vc.cfg") == -1)
 
+	# gradle build detection — the AAB prerequisite, read from the preset's options
+	var gb_path := "user://verify_build_kit_gb.cfg"
+	var gbf := FileAccess.open(gb_path, FileAccess.WRITE)
+	gbf.store_string("[preset.0]\nname=\"Android\"\nplatform=\"Android\"\n[preset.0.options]\ngradle_build/use_gradle_build=true\n")
+	gbf.close()
+	_check("gradle build on detected", ServiceT.preset_uses_gradle_build("preset.0", gb_path))
+	var gb_path2 := "user://verify_build_kit_gb2.cfg"
+	var gbf2 := FileAccess.open(gb_path2, FileAccess.WRITE)
+	gbf2.store_string("[preset.0]\nname=\"Android\"\nplatform=\"Android\"\n[preset.0.options]\ngradle_build/use_gradle_build=false\n")
+	gbf2.close()
+	_check("gradle build off detected", not ServiceT.preset_uses_gradle_build("preset.0", gb_path2))
+	var gb_path3 := "user://verify_build_kit_gb3.cfg"
+	var gbf3 := FileAccess.open(gb_path3, FileAccess.WRITE)
+	gbf3.store_string("[preset.0]\nname=\"Android\"\nplatform=\"Android\"\n[preset.0.options]\npackage/name=\"\"\n")
+	gbf3.close()
+	_check("gradle build unset defaults off", not ServiceT.preset_uses_gradle_build("preset.0", gb_path3))
+	_check("gradle build missing file defaults off", not ServiceT.preset_uses_gradle_build("preset.0", "user://nope_gb.cfg"))
+
 	# derived paths
 	var paths := ServiceT.derive_paths("/proj/game/", "../build/ios/Game.ipa", "iOS")
 	_check("paths out", paths["out"] == "/proj/build/ios/Game.ipa", str(paths))

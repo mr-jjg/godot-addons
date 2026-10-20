@@ -783,6 +783,13 @@ static func _bump_preset_version_code(section: String, path := "res://export_pre
 	return next
 
 
+static func preset_uses_gradle_build(section: String, path := "res://export_presets.cfg") -> bool:
+	var cfg := ConfigFile.new()
+	if cfg.load(path) != OK:
+		return false
+	return bool(cfg.get_value(section + ".options", "gradle_build/use_gradle_build", false))
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 func is_busy() -> bool:
@@ -2030,6 +2037,7 @@ func refresh_preflight() -> void:
 	rows.append(_check_devices())
 	rows.append(_check_android_templates())
 	rows.append(_check_android_preset())
+	rows.append(_check_android_gradle_build())
 	var rk := android_release_keystore()
 	rows.append(_check_android_release_keystore(str(rk["path"]), str(rk["user"]), str(rk["password"])))
 	rows.append_array(_itch_rows())
@@ -2555,6 +2563,33 @@ func _fix_android_preset() -> Dictionary:
 	return ok({"message": ", ".join(msgs) if not msgs.is_empty() else "nothing to fix"})
 
 
+func _check_android_gradle_build() -> Dictionary:
+	var preset := load_preset("Android")
+	if preset.is_empty():
+		return _row("android.gradle_build", "Gradle build (AAB)", "warn", "",
+			"Needed only for Build → Play Console. Create an Android export preset first (see the Android export preset row).")
+	if preset_uses_gradle_build(str(preset["section"])):
+		return _row("android.gradle_build", "Gradle build (AAB)", "ok", "Use Gradle Build is on")
+	return _row("android.gradle_build", "Gradle build (AAB)", "warn", "Use Gradle Build is off",
+		"Needed only for Build → Play Console (AAB).\n1. Press Fix — turns on Use Gradle Build in the preset.\n⚠ This also routes DEBUG builds through Gradle, so the Android build template becomes required for Build → Device too (see the Android build template row).\n2. Refresh preflight.",
+		true)
+
+
+func _fix_android_gradle_build() -> Dictionary:
+	var preset := load_preset("Android")
+	if preset.is_empty():
+		return err("No Android preset to fix — create one first.")
+	var cfg := ConfigFile.new()
+	if cfg.load("res://export_presets.cfg") != OK:
+		return err("Cannot parse export_presets.cfg.")
+	cfg.set_value(str(preset["section"]) + ".options", "gradle_build/use_gradle_build", true)
+	if cfg.save("res://export_presets.cfg") != OK:
+		return err("Cannot write export_presets.cfg.")
+	mark_dirty()
+	refresh_preflight()
+	return ok({"message": "Use Gradle Build enabled"})
+
+
 ## `extra` = optional helper flags (e.g. --app-version for build-numbers).
 func _spawn_asc(command: String, bundle_id: String, log_name: String,
 		extra: PackedStringArray = PackedStringArray()) -> Dictionary:
@@ -2965,6 +3000,8 @@ func apply_fix(id: String, opts: Dictionary = {}) -> Dictionary:
 			return _fix_bundle_id()
 		"android.preset":
 			return _fix_android_preset()
+		"android.gradle_build":
+			return _fix_android_gradle_build()
 		"itch.butler":
 			return _fix_butler()
 		"itch.templates":
