@@ -790,6 +790,16 @@ static func preset_uses_gradle_build(section: String, path := "res://export_pres
 	return bool(cfg.get_value(section + ".options", "gradle_build/use_gradle_build", false))
 
 
+## "ok" / "stale" / "missing". Godot writes .build_version (= VERSION_FULL_CONFIG,
+## e.g. "4.7.1.stable") beside the build dir; a version mismatch makes Android
+## export refuse the template.
+static func android_build_template_state(ver: String, build_dir := "res://android/build",
+		marker := "res://android/.build_version") -> String:
+	if not DirAccess.dir_exists_absolute(build_dir) or not FileAccess.file_exists(marker):
+		return "missing"
+	return "ok" if FileAccess.get_file_as_string(marker).strip_edges() == ver else "stale"
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 func is_busy() -> bool:
@@ -2038,6 +2048,7 @@ func refresh_preflight() -> void:
 	rows.append(_check_android_templates())
 	rows.append(_check_android_preset())
 	rows.append(_check_android_gradle_build())
+	rows.append(_check_android_build_template())
 	var rk := android_release_keystore()
 	rows.append(_check_android_release_keystore(str(rk["path"]), str(rk["user"]), str(rk["password"])))
 	rows.append_array(_itch_rows())
@@ -2588,6 +2599,25 @@ func _fix_android_gradle_build() -> Dictionary:
 	mark_dirty()
 	refresh_preflight()
 	return ok({"message": "Use Gradle Build enabled"})
+
+
+## Not auto-fixable: Godot only installs the template as a side effect of a full
+## --export-debug/--export-release run (not standalone), so we point at the
+## editor's own one-click menu instead of spawning an export.
+func _check_android_build_template() -> Dictionary:
+	var v: Dictionary = Engine.get_version_info()
+	var ver := version_tag(v) + "." + str(v["status"])
+	match android_build_template_state(ver):
+		"ok":
+			return _row("android.build_template", "Android build template", "ok", ver)
+		"stale":
+			var installed := FileAccess.get_file_as_string("res://android/.build_version").strip_edges()
+			return _row("android.build_template", "Android build template", "warn",
+				"installed %s, editor is %s" % [installed, ver],
+				"The installed build template is from a different Godot version — Android export will refuse it.\n1. Editor → Project → Install Android Build Template… to reinstall for %s.\n2. Refresh preflight." % ver)
+		_:
+			return _row("android.build_template", "Android build template", "warn", "not installed",
+				"Required once Use Gradle Build is on (always for Build → Play Console).\n1. Editor → Project → Install Android Build Template…\n2. Refresh preflight.")
 
 
 ## `extra` = optional helper flags (e.g. --app-version for build-numbers).

@@ -163,6 +163,18 @@ func _initialize() -> void:
 	_check("gradle build unset defaults off", not ServiceT.preset_uses_gradle_build("preset.0", gb_path3))
 	_check("gradle build missing file defaults off", not ServiceT.preset_uses_gradle_build("preset.0", "user://nope_gb.cfg"))
 
+	# android build template state — presence + version-match of the .build_version marker
+	var bt_dir := "user://verify_build_kit_bt"
+	var bt_marker := bt_dir.path_join(".build_version")
+	DirAccess.make_dir_recursive_absolute(bt_dir)
+	_check("build template missing when no marker", ServiceT.android_build_template_state("4.7.1.stable", bt_dir, "user://nope_bt_marker") == "missing")
+	var btf := FileAccess.open(bt_marker, FileAccess.WRITE)
+	btf.store_string("4.7.1.stable\n")  # trailing newline exercises strip_edges
+	btf.close()
+	_check("build template ok when marker matches", ServiceT.android_build_template_state("4.7.1.stable", bt_dir, bt_marker) == "ok")
+	_check("build template stale when marker differs", ServiceT.android_build_template_state("4.8.0.stable", bt_dir, bt_marker) == "stale")
+	_check("build template missing when no build dir", ServiceT.android_build_template_state("4.7.1.stable", "user://nope_bt_dir", bt_marker) == "missing")
+
 	# derived paths
 	var paths := ServiceT.derive_paths("/proj/game/", "../build/ios/Game.ipa", "iOS")
 	_check("paths out", paths["out"] == "/proj/build/ios/Game.ipa", str(paths))
@@ -1342,22 +1354,22 @@ out['bad_versions'] = [rejects(h.check_app_version, v) for v in ['$(MARKETING_VE
 out['good_versions'] = [rejects(h.check_app_version, v) for v in ['', '1', '1.3', '1.3.0']]
 out['bad_builds'] = [rejects(h.check_build_number, v) for v in ['', '$(CURRENT_PROJECT_VERSION)', 'seven']]
 FIX = {'data': [
-    {'type': 'builds', 'id': 'b2', 'attributes': {'version': '7', 'processingState': 'PROCESSING', 'uploadedDate': '2026-10-09T10:05:00-07:00'}},
-    {'type': 'builds', 'id': 'b1', 'attributes': {'version': '6', 'processingState': 'VALID', 'uploadedDate': '2026-10-08T09:00:00-07:00'}}],
-    'links': {'self': 'https://api.appstoreconnect.apple.com/v1/builds'}}
+	{'type': 'builds', 'id': 'b2', 'attributes': {'version': '7', 'processingState': 'PROCESSING', 'uploadedDate': '2026-10-09T10:05:00-07:00'}},
+	{'type': 'builds', 'id': 'b1', 'attributes': {'version': '6', 'processingState': 'VALID', 'uploadedDate': '2026-10-08T09:00:00-07:00'}}],
+	'links': {'self': 'https://api.appstoreconnect.apple.com/v1/builds'}}
 out['parsed'] = h.parse_builds(FIX)
 calls = []
 def fake_get(token, path):
     calls.append(path)
-    if path.startswith('/v1/apps?'):
-        return {'data': [{'type': 'apps', 'id': 'APP', 'attributes': {'bundleId': 'com.example.game', 'name': 'Game'}}]}
-    if 'filter[version]=7' in path:
-        return {'data': FIX['data'][:1]}
+	if path.startswith('/v1/apps?'):
+		return {'data': [{'type': 'apps', 'id': 'APP', 'attributes': {'bundleId': 'com.example.game', 'name': 'Game'}}]}
+	if 'filter[version]=7' in path:
+		return {'data': FIX['data'][:1]}
     return FIX
 h.make_token = lambda *a: 'token'
 h.get = fake_get
 def run(argv):
-    sys.argv = ['asc_helper.py', '--key-path', 'k', '--key-id', 'K', '--issuer-id', 'I'] + argv
+	sys.argv = ['asc_helper.py', '--key-path', 'k', '--key-id', 'K', '--issuer-id', 'I'] + argv
     buf = io.StringIO()
     code = 0
     with contextlib.redirect_stdout(buf):
