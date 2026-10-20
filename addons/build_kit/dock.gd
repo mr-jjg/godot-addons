@@ -491,15 +491,15 @@ func _make_row(row: Dictionary, platform: String) -> Control:
 		# silently — only 2+ ready devices need a target picked.
 		box.add_child(_make_device_picker())
 
+	if str(row.get("guidance", "")) != "":
+		# Editor-default font size on purpose: a shrunken caption size is
+		# unreadable on hi-DPI — the dim color alone marks it as secondary.
+		var guide := Label.new()
+		guide.text = str(row["guidance"])
+		guide.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		guide.add_theme_color_override("font_color", Pal.CAPTION)
+		box.add_child(guide)
 	if str(row["status"]) != "ok":
-		if str(row.get("guidance", "")) != "":
-			# Editor-default font size on purpose: a shrunken caption size is
-			# unreadable on hi-DPI — the dim color alone marks it as secondary.
-			var guide := Label.new()
-			guide.text = str(row["guidance"])
-			guide.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			guide.add_theme_color_override("font_color", Pal.CAPTION)
-			box.add_child(guide)
 		var links: Array = row.get("links", [])
 		if not links.is_empty():
 			var bar := HBoxContainer.new()

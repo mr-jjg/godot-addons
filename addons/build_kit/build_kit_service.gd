@@ -2580,7 +2580,8 @@ func _check_android_gradle_build() -> Dictionary:
 		return _row("android.gradle_build", "Gradle build (AAB)", "warn", "",
 			"Needed only for Build → Play Console. Create an Android export preset first (see the Android export preset row).")
 	if preset_uses_gradle_build(str(preset["section"])):
-		return _row("android.gradle_build", "Gradle build (AAB)", "ok", "Use Gradle Build is on")
+		return _row("android.gradle_build", "Gradle build (AAB)", "ok", "Use Gradle Build is on",
+			"Heads up: Build → Device (debug) now routes through Gradle too — slower, and it needs the build template. Turn it back off in Project → Export → Android for the fast prebuilt-template path.")
 	return _row("android.gradle_build", "Gradle build (AAB)", "warn", "Use Gradle Build is off",
 		"Needed only for Build → Play Console (AAB).\n1. Press Fix — turns on Use Gradle Build in the preset.\n⚠ This also routes DEBUG builds through Gradle, so the Android build template becomes required for Build → Device too (see the Android build template row).\n2. Refresh preflight.",
 		true)
