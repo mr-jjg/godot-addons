@@ -272,6 +272,8 @@ static func resolve_ios_auth(mode: String, teams: PackedStringArray, has_key: bo
 
 ## Xcode's signed-in team ids (empty when nobody has signed in).
 static func xcode_teams() -> PackedStringArray:
+	if OS.get_name() != "macOS":  # Xcode (and `defaults`) exist only on macOS
+		return PackedStringArray()
 	return parse_teams(str(Exec.run(PackedStringArray(
 		["defaults", "read", "com.apple.dt.Xcode", "IDEProvisioningTeamByIdentifier"]))["output"]))
 
@@ -317,8 +319,15 @@ const RELEASE_KEYSTORE_ENV := [
 	["password", "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD"],
 ]
 
+## The user's home dir: $HOME, else %USERPROFILE% — HOME is unset on Windows,
+## where Android release builds run (the iOS tilde paths only run on macOS).
+static func home_dir() -> String:
+	var home := OS.get_environment("HOME")
+	return home if home != "" else OS.get_environment("USERPROFILE")
+
+
 ## {path, user, password} for the release key: environment, then repo .env ("" =
-## unset). A leading ~ in the path expands via HOME.
+## unset). A leading ~ in the path expands via home_dir().
 func android_release_keystore() -> Dictionary:
 	var env := {}
 	for env_path in ENV_PATHS:
@@ -332,7 +341,7 @@ func android_release_keystore() -> Dictionary:
 			value = str(env.get(pair[1], ""))
 		creds[pair[0]] = value
 	if str(creds["path"]).begins_with("~"):
-		creds["path"] = OS.get_environment("HOME") + str(creds["path"]).substr(1)
+		creds["path"] = home_dir() + str(creds["path"]).substr(1)
 	return creds
 
 
@@ -934,10 +943,19 @@ func start_build_android(sdk_path: String, serial := "") -> Dictionary:
 	return ok({"stages": _stages.size() + 1})
 
 
+## The release-key creds as {ENV_NAME: value} for a stage's `env`: Godot reads
+## GODOT_ANDROID_KEYSTORE_RELEASE_* at export, and _spawn_with_env injects them
+## into the export child only (then restores), so the password never reaches the
+## echoed shell line or log — and a user's own such env vars survive the build.
+static func _release_keystore_env(ks: Dictionary) -> Dictionary:
+	var env := {}
+	for pair in RELEASE_KEYSTORE_ENV:
+		env[str(pair[1])] = str(ks[pair[0]])
+	return env
+
+
 ## Export a release-signed APK to disk — one stage, no install. The release key
-## comes from the .env; Godot reads it from GODOT_ANDROID_KEYSTORE_RELEASE_* at
-## export, so we set those on our own process and let the spawned export inherit
-## them (the password never reaches a shell line or the log).
+## comes from the .env (see _release_keystore_env).
 func start_build_android_release() -> Dictionary:
 	var guard := _android_build_preflight()
 	if not guard.is_empty():
@@ -947,9 +965,6 @@ func start_build_android_release() -> Dictionary:
 		return err("No release keystore configured. See the Release keystore preflight row — press Fix to generate one.")
 	if not FileAccess.file_exists(str(ks["path"])):
 		return err("The release keystore file is missing (%s). Re-generate or re-add it from the Release keystore row." % ks["path"])
-
-	for pair in RELEASE_KEYSTORE_ENV:
-		OS.set_environment(str(pair[1]), str(ks[pair[0]]))
 
 	var root := ProjectSettings.globalize_path("res://")
 	var paths := derive_paths(root, _preset["export_path"], "Android")
@@ -963,13 +978,10 @@ func start_build_android_release() -> Dictionary:
 				OS.get_executable_path(), "--headless", "--path", root,
 				"--export-release", _preset["name"], paths["out"],
 			])),
+			"env": _release_keystore_env(ks),
 		},
 	]
 	_next_stage(paths)
-	# Clear them now the spawned export has inherited them — otherwise
-	# android_release_keystore()'s env-first read shadows .env on the next build.
-	for pair in RELEASE_KEYSTORE_ENV:
-		OS.unset_environment(str(pair[1]))
 	return ok({"stages": _stages.size() + 1})
 
 
@@ -997,9 +1009,6 @@ func start_build_android_aab() -> Dictionary:
 		return err("Couldn't set export_format in the Android preset.")
 	_saved_export_format = prior
 
-	for pair in RELEASE_KEYSTORE_ENV:
-		OS.set_environment(str(pair[1]), str(ks[pair[0]]))
-
 	var root := ProjectSettings.globalize_path("res://")
 	var paths := derive_paths(root, _preset["export_path"], "Android")
 	var aab_out: String = paths["out"].get_basename() + ".aab"
@@ -1013,11 +1022,10 @@ func start_build_android_aab() -> Dictionary:
 				OS.get_executable_path(), "--headless", "--path", root,
 				"--export-release", _preset["name"], aab_out,
 			])),
+			"env": _release_keystore_env(ks),
 		},
 	]
 	_next_stage(paths)
-	for pair in RELEASE_KEYSTORE_ENV:
-		OS.unset_environment(str(pair[1]))
 	return ok({"stages": _stages.size() + 1})
 
 
@@ -1072,8 +1080,13 @@ func _next_stage(paths: Dictionary = {}) -> void:
 			if _bump_preset_version_code(str(_preset["section"])) < 0:
 				push_warning("build_kit: couldn't bump version/code in the preset")
 			var aab: String = paths["out"].get_basename() + ".aab"
+			var guidance := "Signed AAB: %s\n" % aab
+			# Only the generate Fix writes the cert; an adopted keystore has none.
+			if FileAccess.file_exists(upload_cert_path()):
+				guidance += "Upload cert (Play App Signing): %s\n" % upload_cert_path()
+			guidance += "Upload the .aab in the Play Console."
 			_finish({"ok": true, "title": "AAB exported → upload to Play Console",
-				"guidance": "Signed AAB: %s\nUpload cert (Play App Signing): %s\nUpload the .aab in the Play Console." % [aab, upload_cert_path()],
+				"guidance": guidance,
 				"links": [
 					{"label": "Open folder", "url": paths["dir"]},
 					{"label": "Play Console", "url": "https://play.google.com/console"},
@@ -3050,7 +3063,11 @@ func _fix_release_keystore(jdk_path: String, keystore_path := "") -> Dictionary:
 		"GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD": password,
 	})
 	if env_file == "":
-		return err("Keystore created at %s, but %s could not be written." % [keystore_path, env_write_path()])
+		# The password only lived in memory, so a keystore we can't record creds
+		# for is unusable — discard it, else the "already exists" guard above
+		# wedges every retry.
+		DirAccess.remove_absolute(keystore_path)
+		return err("Couldn't write %s, so the new keystore was discarded (its password was never saved). Fix the .env location and press Fix again." % env_write_path())
 	var pem := upload_cert_path()
 	var cert := Exec.run(keytool_exportcert_args(keytool, keystore_path, alias, password, pem))
 	refresh_preflight()
