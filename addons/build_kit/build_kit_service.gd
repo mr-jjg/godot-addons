@@ -52,6 +52,8 @@ var _proc := {}                  # active Exec.spawn handle (+offset)
 var _upload := false
 var _build_number := 0           # CFBundleVersion of the running iOS build
 var _android_release := false    # release-APK export (finishes at disk, no install)
+var _android_aab := false        # AAB export for the Play Console (release, no upload)
+var _saved_export_format := -1   # preset export_format to restore after an AAB build (-1 = none)
 var _context := {}               # bundle_id / team_id for classify + guidance
 var _preset := {}                # parsed iOS preset (cached at build start)
 
@@ -783,6 +785,20 @@ static func _bump_preset_version_code(section: String, path := "res://export_pre
 	return next
 
 
+## Writes the preset's export_format (0=APK, 1=AAB), returning the prior value,
+## or -1 if the preset can't be read/written. AAB export needs 1 (see
+## start_build_android_aab); the prior value is restored in _finish.
+static func _set_preset_export_format(section: String, value: int, path := "res://export_presets.cfg") -> int:
+	var cfg := ConfigFile.new()
+	if cfg.load(path) != OK:
+		return -1
+	var prior := int(cfg.get_value(section + ".options", "gradle_build/export_format", 0))
+	cfg.set_value(section + ".options", "gradle_build/export_format", value)
+	if cfg.save(path) != OK:
+		return -1
+	return prior
+
+
 static func preset_uses_gradle_build(section: String, path := "res://export_presets.cfg") -> bool:
 	var cfg := ConfigFile.new()
 	if cfg.load(path) != OK:
@@ -957,6 +973,54 @@ func start_build_android_release() -> Dictionary:
 	return ok({"stages": _stages.size() + 1})
 
 
+## Export a signed .aab to disk (Play upload is manual — Godot has no Play API).
+## Godot checks the output extension against the preset's export_format, so we
+## force export_format=1 here and restore it in _finish. AAB is gated on Gradle
+## Build + the build template, so guard on both before touching anything.
+func start_build_android_aab() -> Dictionary:
+	var guard := _android_build_preflight()
+	if not guard.is_empty():
+		return guard
+	var ks := android_release_keystore()
+	if str(ks["path"]) == "" or str(ks["user"]) == "" or str(ks["password"]) == "":
+		return err("No release keystore configured. See the Release keystore preflight row — press Fix to generate one.")
+	if not FileAccess.file_exists(str(ks["path"])):
+		return err("The release keystore file is missing (%s). Re-generate or re-add it from the Release keystore row." % ks["path"])
+	if not preset_uses_gradle_build(str(_preset["section"])):
+		return err("Build → Play Console needs Use Gradle Build enabled. See the 'Gradle build (AAB)' preflight row — press Fix.")
+	var v: Dictionary = Engine.get_version_info()
+	if android_build_template_state(version_tag(v) + "." + str(v["status"])) != "ok":
+		return err("The Android build template isn't installed for this editor version. See the 'Android build template' preflight row.")
+
+	var prior := _set_preset_export_format(str(_preset["section"]), 1)
+	if prior < 0:
+		return err("Couldn't set export_format in the Android preset.")
+	_saved_export_format = prior
+
+	for pair in RELEASE_KEYSTORE_ENV:
+		OS.set_environment(str(pair[1]), str(ks[pair[0]]))
+
+	var root := ProjectSettings.globalize_path("res://")
+	var paths := derive_paths(root, _preset["export_path"], "Android")
+	var aab_out: String = paths["out"].get_basename() + ".aab"
+	_context = {}
+	_active_platform = "android"
+	_android_aab = true
+	_stages = [
+		{
+			"name": "export",
+			"shell": Exec.command_line(PackedStringArray([
+				OS.get_executable_path(), "--headless", "--path", root,
+				"--export-release", _preset["name"], aab_out,
+			])),
+		},
+	]
+	_next_stage(paths)
+	for pair in RELEASE_KEYSTORE_ENV:
+		OS.unset_environment(str(pair[1]))
+	return ok({"stages": _stages.size() + 1})
+
+
 func cancel() -> void:
 	if _proc.has("pid"):
 		Exec.kill_tree(int(_proc["pid"]))
@@ -1004,6 +1068,16 @@ func _next_stage(paths: Dictionary = {}) -> void:
 			})
 		elif _active_platform == "itch":
 			_finish(_itch_success_result())
+		elif _android_aab:
+			if _bump_preset_version_code(str(_preset["section"])) < 0:
+				push_warning("build_kit: couldn't bump version/code in the preset")
+			var aab: String = paths["out"].get_basename() + ".aab"
+			_finish({"ok": true, "title": "AAB exported → upload to Play Console",
+				"guidance": "Signed AAB: %s\nUpload cert (Play App Signing): %s\nUpload the .aab in the Play Console." % [aab, upload_cert_path()],
+				"links": [
+					{"label": "Open folder", "url": paths["dir"]},
+					{"label": "Play Console", "url": "https://play.google.com/console"},
+				]})
 		elif _android_release:
 			if _bump_preset_version_code(str(_preset["section"])) < 0:
 				push_warning("build_kit: couldn't bump version/code in the preset")
@@ -1124,6 +1198,13 @@ func _finish(result: Dictionary) -> void:
 	_stage = ""
 	_stage_def = {}
 	_active_platform = ""
+	# Restore the preset's export_format the AAB build flipped to 1 (the spawned
+	# export reads it from disk mid-run, so it can't be restored right after spawn).
+	if _android_aab and _saved_export_format >= 0:
+		if _set_preset_export_format(str(_preset["section"]), _saved_export_format) < 0:
+			push_warning("build_kit: couldn't restore export_format in the preset")
+	_saved_export_format = -1
+	_android_aab = false
 	_android_release = false
 	_proc = {}
 	_itch_build = {}

@@ -107,6 +107,15 @@ func _initialize() -> void:
 	var neutral_templates := Classify.classify("No export template found for platform \"Android\".", {}, "android")
 	_check("classify unscoped rule matches android", neutral_templates["id"] == "no_export_templates", str(neutral_templates))
 	_check("classify no_export_templates wording is platform-neutral", not str(neutral_templates["guidance"]).contains("iOS"), str(neutral_templates))
+	# AAB / Gradle failure strings (verified against the 4.7.1 binary)
+	var aab_gate := Classify.classify("ERROR: \"Export AAB\" is only valid when \"Use Gradle Build\" is enabled.", {}, "android")
+	_check("classify aab needs gradle build", aab_gate["id"] == "aab_needs_gradle_build", str(aab_gate))
+	var aab_gate_ios := Classify.classify("\"Export AAB\" is only valid when \"Use Gradle Build\" is enabled.", {}, "ios")
+	_check("classify aab/gradle rule is android-only", aab_gate_ios["id"] == "unknown", str(aab_gate_ios))
+	var bt_missing_log := Classify.classify("ERROR: Android build template not installed in the project. Install it from the Project menu.", {}, "android")
+	_check("classify android build template missing", bt_missing_log["id"] == "android_build_template_missing", str(bt_missing_log))
+	var gradle_fail := Classify.classify("Building of Android project failed, check output for the error: Copying ...", {}, "android")
+	_check("classify gradle build failed", gradle_fail["id"] == "gradle_build_failed", str(gradle_fail))
 
 	# preset parsing
 	var preset := ServiceT.parse_preset_text(PRESET_FIXTURE, "iOS")
@@ -163,6 +172,18 @@ func _initialize() -> void:
 	_check("gradle build unset defaults off", not ServiceT.preset_uses_gradle_build("preset.0", gb_path3))
 	_check("gradle build missing file defaults off", not ServiceT.preset_uses_gradle_build("preset.0", "user://nope_gb.cfg"))
 
+	# export_format set/restore — AAB export forces 1 and _finish restores the prior value
+	var ef_path := "user://verify_build_kit_ef.cfg"
+	var eff := FileAccess.open(ef_path, FileAccess.WRITE)
+	eff.store_string("[preset.0]\nname=\"Android\"\nplatform=\"Android\"\n[preset.0.options]\ngradle_build/export_format=0\n")
+	eff.close()
+	_check("set export_format returns prior 0", ServiceT._set_preset_export_format("preset.0", 1, ef_path) == 0)
+	var ef_read := ConfigFile.new()
+	ef_read.load(ef_path)
+	_check("export_format written as 1", int(ef_read.get_value("preset.0.options", "gradle_build/export_format", -1)) == 1)
+	_check("set export_format round-trips prior 1", ServiceT._set_preset_export_format("preset.0", 0, ef_path) == 1)
+	_check("set export_format missing file returns -1", ServiceT._set_preset_export_format("preset.0", 1, "user://nope_ef.cfg") == -1)
+
 	# android build template state — presence + version-match of the .build_version marker
 	var bt_dir := "user://verify_build_kit_bt"
 	var bt_marker := bt_dir.path_join(".build_version")
@@ -188,6 +209,11 @@ func _initialize() -> void:
 		not android_paths.has("xcodeproj") and not android_paths.has("archive")
 		and not android_paths.has("info_plist") and not android_paths.has("options_plist"),
 		str(android_paths))
+	# AAB output path = the APK export path with its extension swapped (what
+	# start_build_android_aab passes to --export-release)
+	_check("aab output path swaps extension",
+		android_paths["out"].get_basename() + ".aab" == "/proj/build/android/game.aab",
+		android_paths["out"])
 
 	# apksigner silent-failure detection
 	_check("apksigner missing detected", ServiceT.apksigner_warning_signature(

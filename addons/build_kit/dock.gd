@@ -27,6 +27,7 @@ var _btn_cancel: Button
 var _btn_tf_status: Button
 var _btn_install: Button
 var _btn_apk: Button
+var _btn_aab: Button
 var _btn_cancel_android: Button
 var _btn_itch_push: Button
 var _btn_itch_export: Button
@@ -103,15 +104,12 @@ func _build_android_tab() -> Control:
 		"Export a debug APK and adb install it on the selected/only device")
 	_btn_cancel_android = Ui.button("✕ Cancel", _on_cancel_android)
 	_btn_cancel_android.disabled = true
-	# Deferred this pass (proposal §8) — visibly disabled rather than absent,
-	# so intent is signaled instead of leaving the tab looking unfinished.
-	var btn_aab := Ui.button("▶ Build → Play Console", Callable(),
-		"Needs Gradle Build + the AAB pipeline — not built yet")
-	btn_aab.disabled = true  # TODO: analog of iOS's _btn_testflight
+	_btn_aab = Ui.button("▶ Build → Play Console", _on_build_android_aab,
+		"Export a signed .aab for the Play Console (needs Gradle Build + the build template)")
 	_btn_apk = Ui.button("▶ Build release APK", _on_build_android_release,
 		"Export a release-signed APK to disk (no install)")
 	var build_col := VBoxContainer.new()
-	build_col.add_child(Ui.button_bar([_btn_install, _btn_cancel_android, btn_aab, _btn_apk]))
+	build_col.add_child(Ui.button_bar([_btn_install, _btn_cancel_android, _btn_aab, _btn_apk]))
 	return _make_platform_tab("android", "Android", "Build Android", build_col)
 
 
@@ -332,6 +330,12 @@ func _on_build_android_release() -> void:
 		_set_status("android", str(result.get("error", "")), Pal.ERROR, STATUS_TOAST_SECONDS)
 
 
+func _on_build_android_aab() -> void:
+	var result: Dictionary = service.start_build_android_aab()
+	if not result.get("ok", false):
+		_set_status("android", str(result.get("error", "")), Pal.ERROR, STATUS_TOAST_SECONDS)
+
+
 func _on_cancel_android() -> void:
 	service.cancel()
 
@@ -383,6 +387,7 @@ func _on_stage_changed(stage: String, platform: String) -> void:
 	_btn_cancel.disabled = not busy
 	_btn_install.disabled = busy
 	_btn_apk.disabled = busy
+	_btn_aab.disabled = busy
 	_btn_cancel_android.disabled = not busy
 	_btn_itch_push.disabled = busy
 	_btn_itch_export.disabled = busy
